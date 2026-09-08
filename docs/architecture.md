@@ -14,6 +14,9 @@ encoding. The module is replaced using its declared historical name,
 The wrapper owns HTTP rather than using the library's default transport:
 
 - Context covers connection establishment, authentication and response reading.
+- The anonymous discovery connection may close after HTTP 401. Type-1 begins
+  on a fresh connection; the following authentication and SOAP exchange must
+  stay on that connection.
 - Every exchange establishes an NTLM session on one TCP connection, with fresh
   session keys. Replacing the connection or replaying a request is forbidden.
   This costs extra round trips but avoids unsafe reuse of NTLM sequence state.
@@ -43,3 +46,6 @@ PowerShell disables profiles, prompts and progress records, enables terminating
 errors and configures UTF-8 console output. Script text remains under the
 caller's control; use explicit `exit $LASTEXITCODE` when propagating a native
 program's exit code from a larger PowerShell script.
+
+For explicit CP866/CP1251, the wrapper sets WINRS_CODEPAGE as well as the local
+decoder; changing cmd.exe with chcp alone does not set the WinRS stream encoding.

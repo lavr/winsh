@@ -252,7 +252,7 @@ Options:
   --password-stdin       Read password from first stdin line; no prompt
   --target-host NAME     TLS certificate name when using a tunnel
   --timeout DURATION    Overall execution timeout (default 60s)
-  --codepage CODEPAGE    run output: raw (default), utf-8, 866 or 1251
+  --codepage CODEPAGE    run encoding: raw/utf-8 (default WinRS UTF-8), 866 or 1251
   -v, -vv                Session diagnostics on stderr (no wire dump)
   --help, --version
 

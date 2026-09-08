@@ -31,6 +31,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', ct)
         self.send_header('Content-Length', str(len(data)))
         if auth: self.send_header('WWW-Authenticate', auth)
+        if code == 401 and auth == 'Negotiate':
+            self.send_header('Connection', 'close')
+            self.close_connection = True
         self.end_headers()
         self.wfile.write(data)
     def do_POST(self):

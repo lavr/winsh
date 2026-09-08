@@ -7,8 +7,9 @@ binary. Domain NTLM, encrypted HTTP messages, verified HTTPS, separate output
 streams, and remote exit status. No Python, Ansible, OpenSSL configuration or
 runtime installation on the machine running winsh.
 
-**Status:** v0.1 development. Automated protocol and CLI tests are included;
-real Windows validation is opt-in. No stable release has been published yet.
+**Status:** v0.1 development. Validated over encrypted HTTP on Windows Server
+2016 and 2019. Automated protocol and CLI tests are included; live tests remain
+opt-in. No stable release has been published yet.
 
 ## Build
 
@@ -84,9 +85,10 @@ PowerShell scripts are UTF-8 files/text encoded as UTF-16LE for execution;
 PowerShell console output is configured as UTF-8. Windows PowerShell may still
 format error records as CLIXML on stderr; v0.1 preserves those records.
 
-`run` leaves bytes unchanged by default. Use `--codepage 866` or
-`--codepage 1251` to decode a known console encoding to UTF-8; `utf-8` explicitly
-selects pass-through. There is no automatic codepage probe in v0.1.
+`run` requests UTF-8 from WinRS and leaves the returned bytes unchanged by
+default. `--codepage 866` or `--codepage 1251` requests that WinRS output encoding
+and decodes it to UTF-8 locally. `raw` and `utf-8` retain the default UTF-8 WinRS
+encoding with pass-through. There is no automatic codepage probe in v0.1.
 
 Remote exit status is returned directly. Local failures print `winsh:` on
 stderr and use 201 (input), 202 (transport/protocol/output/cleanup), 203 (timeout),

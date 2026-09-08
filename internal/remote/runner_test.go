@@ -32,6 +32,9 @@ func TestRunWSManFlow(t *testing.T) {
 		}
 		switch {
 		case strings.Contains(s, transferURI+"Create"):
+			if !strings.Contains(s, `Name="WINRS_CODEPAGE">866`) {
+				t.Error("--codepage did not set WinRS output encoding")
+			}
 			return envelope(transferURI+"CreateResponse", `<rsp:Shell><rsp:ShellId>shell-1</rsp:ShellId></rsp:Shell>`), nil
 		case strings.Contains(s, shellURI+"Command"):
 			if !strings.Contains(s, "echo &lt;") && !strings.Contains(s, "echo <") {

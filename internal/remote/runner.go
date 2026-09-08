@@ -39,7 +39,7 @@ func run(ctx context.Context, r Request, stdout, stderr io.Writer, p poster) (co
 		}
 		return parseResponse(body)
 	}
-	opened, err := send(ctx, winrm.NewOpenShellRequest(r.Endpoint, params))
+	opened, err := openShell(ctx, r, params, p)
 	if err != nil {
 		return 0, err
 	}
@@ -115,4 +115,25 @@ func run(ctx context.Context, r Request, stdout, stderr io.Writer, p poster) (co
 			return rc, nil
 		}
 	}
+}
+
+func openShell(ctx context.Context, r Request, params *winrm.Parameters, p poster) (response, error) {
+	message := winrm.NewOpenShellRequest(r.Endpoint, params)
+	defer message.Free()
+	body := message.String()
+	if !r.PowerShell && (r.Codepage == "866" || r.Codepage == "1251") {
+		// The pinned dependency hardcodes 65001 and exposes no option setter after
+		// building the header. Replace only its unique codepage value, failing
+		// closed if the upstream wire shape changes. Values are an explicit allowlist.
+		const marker = `Name="WINRS_CODEPAGE">65001`
+		if strings.Count(body, marker) != 1 {
+			return response{}, errors.New("cannot set WinRS codepage")
+		}
+		body = strings.Replace(body, marker, `Name="WINRS_CODEPAGE">`+r.Codepage, 1)
+	}
+	reply, err := p.post(ctx, body)
+	if err != nil {
+		return response{}, err
+	}
+	return parseResponse(reply)
 }

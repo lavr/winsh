@@ -42,3 +42,11 @@ compatibility with a real Windows installation.
 
 Release automation deliberately requires these variables, preventing a skipped
 Windows test from being mistaken for live validation.
+
+## Live validation record
+
+On 2026-09-08, Windows Server 2016 and 2019 passed HTTP NTLM tests with
+AllowUnencrypted disabled: cmd/PowerShell, Unicode including supplementary
+characters, separate stderr, nonzero exit statuses, script files, explicit
+CP866 and execution timeout. The opt-in Go live suite passed on both versions.
+HTTPS remains covered by local TLS tests; no live HTTPS listener was tested.

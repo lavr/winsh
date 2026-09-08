@@ -62,3 +62,29 @@ func TestTransportTLSAndTimeout(t *testing.T) {
 		}
 	})
 }
+
+func TestDiscoveryMayCloseConnection(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.Header().Set("Connection", "close")
+			w.Header().Set("WWW-Authenticate", "Negotiate")
+			w.WriteHeader(401)
+			return
+		}
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Negotiate ") {
+			t.Error("missing type-1 token")
+		}
+		w.Header().Set("WWW-Authenticate", "Negotiate eA==")
+		w.WriteHeader(401)
+	}))
+	defer server.Close()
+	_, err := newTransport(Request{Endpoint: server.URL, User: "alice", Password: "test-secret"}).post(t.Context(), "<soap/>")
+	if requests != 2 {
+		t.Fatalf("requests=%d; expected discovery and type-1 on separate connections: %v", requests, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "type-2") {
+		t.Fatalf("expected invalid type-2 fixture rejection: %v", err)
+	}
+}

@@ -82,6 +82,11 @@ func (t *transport) post(ctx context.Context, message string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// HTTP.sys commonly closes the unauthenticated discovery connection (401).
+	// No NTLM session exists yet. Start type-1 on a fresh connection, then keep
+	// the no-redial rule for type-2/type-3 and sealed SOAP unchanged.
+	rt.CloseIdleConnections()
+	dialed.Store(false)
 	token, err := ntlm.Authenticate(nil, nil)
 	if err != nil {
 		return "", errors.New("cannot create NTLM negotiate message")

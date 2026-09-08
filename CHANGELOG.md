@@ -9,3 +9,6 @@
 - Tests, four-platform static builds and GitHub Actions release workflow.
 
 - Cancel a blocked password read on Ctrl-C, including real OS stdin pipes.
+- Handle HTTP.sys closing the anonymous authentication-discovery connection.
+- Set WinRS output encoding when using --codepage 866/1251.
+- Validate encrypted HTTP execution against Windows Server 2016 and 2019.
