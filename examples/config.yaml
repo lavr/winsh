@@ -1,0 +1,25 @@
+current_context: test
+hosts:
+  windows-test:
+    endpoint: http://127.0.0.1:15985/wsman
+  windows-stage:
+    endpoint: https://windows.example.com:5986/wsman
+credentials:
+  operator:
+    domain: EXAMPLE
+    env_file: credentials.env
+    user: env:WINDOWS_LOGIN
+    password: env:WINDOWS_PASSWORD
+  local:
+    user: Administrator
+    password: "base64:ZXhhbXBsZS1wYXNzd29yZA=="
+contexts:
+  test:
+    host: windows-test
+    credentials: operator
+  stage:
+    host: windows-stage
+    credentials: local
+defaults:
+  auth: ntlm
+  timeout: 60s

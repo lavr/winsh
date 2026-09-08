@@ -52,6 +52,51 @@ allows 8,000 UTF-16 code units for `run` and 8,000 characters for the **encoded*
 PowerShell invocation (roughly 2.7 KiB of script). Larger input fails locally;
 `-f` does not bypass this limit.
 
+## Configuration and contexts
+
+Copy [examples/config.yaml](examples/config.yaml) to your own configuration:
+
+```sh
+export WINSH_CONFIG=/path/to/winsh.yaml
+winsh ps -- 'Get-Date'
+winsh --context stage ps -- 'hostname'
+winsh config get-contexts
+winsh config use-context stage
+winsh config current-context
+winsh config view
+```
+
+Commands remain explicit (`ps` or `run`); `--` separates remote code from CLI
+options. There is no `default_command`. Hosts and credentials can come from the
+selected context. A positional host can name a configured host or a network host.
+
+Config discovery: `--config PATH`, then `WINSH_CONFIG`, then `./winsh.yaml`, then
+`$XDG_CONFIG_HOME/winsh/config.yaml` (or `~/.config/winsh/config.yaml`). Missing
+explicit files are errors. Without a config, flag-only usage works as before.
+`--config` and `--context` work before or after the command. Explicit connection
+flags override context settings; `--context` overrides `current_context`.
+
+Both `user` and `password` accept:
+
+| YAML value | Meaning |
+| --- | --- |
+| `"alice"` | Plain text |
+| `"env:WINDOWS_PASSWORD"` | Environment variable |
+| `"base64:YWxpY2U="` | Standard Base64 of UTF-8 text (`alice`) |
+| `"literal:env:example"` | Literal text `env:example` |
+
+Prefixes are resolved once. Base64 is encoding, not encryption. An optional
+credential `env_file` is parsed as dotenv data, without executing shell commands;
+relative paths are resolved against the configuration file. Process variables take
+precedence, including explicitly empty values (which cause a credential error).
+Quote credential values in YAML to preserve their intended text.
+
+`--user` supplies a literal override. `--password-env NAME` reads that process
+variable and `--password-stdin` reads stdin; both bypass the configured password
+and its env_file. Configuration management does not resolve credential references.
+`config view` hides every stored password; `use-context` preserves comments and
+credential sources, writes atomically and uses owner-only permissions on Unix.
+
 ## Through an SSH tunnel
 
 Create and manage the tunnel yourself:

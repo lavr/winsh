@@ -26,7 +26,12 @@ func TestRun(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var out, errout bytes.Buffer
 			calls := 0
-			rc := Run(t.Context(), tt.args, Deps{Stdout: &out, Stderr: &errout, Stdin: strings.NewReader(""), Getenv: func(string) string { return "test-secret" }, Execute: func(ctx context.Context, r remote.Request, o, e io.Writer) (int, error) {
+			rc := Run(t.Context(), tt.args, Deps{Stdout: &out, Stderr: &errout, Stdin: strings.NewReader(""), Getenv: func(name string) string {
+				if name == "WINRM_PASSWORD" {
+					return "test-secret"
+				}
+				return ""
+			}, Execute: func(ctx context.Context, r remote.Request, o, e io.Writer) (int, error) {
 				calls++
 				if r.Command != tt.wantCommand || r.User != tt.wantUser || r.Password != "test-secret" {
 					t.Error("wrong request")
@@ -61,7 +66,12 @@ func TestRejectInvalidInputBeforeNetwork(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var errout bytes.Buffer
-			rc := Run(t.Context(), tt.args, Deps{Stdout: io.Discard, Stderr: &errout, Stdin: strings.NewReader(""), Getenv: func(string) string { return "test-secret" }, Execute: func(context.Context, remote.Request, io.Writer, io.Writer) (int, error) {
+			rc := Run(t.Context(), tt.args, Deps{Stdout: io.Discard, Stderr: &errout, Stdin: strings.NewReader(""), Getenv: func(name string) string {
+				if name == "WINRM_PASSWORD" {
+					return "test-secret"
+				}
+				return ""
+			}, Execute: func(context.Context, remote.Request, io.Writer, io.Writer) (int, error) {
 				t.Error("network called")
 				return 0, nil
 			}})
@@ -81,7 +91,12 @@ func TestPasswordStdinAndScriptFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	var errout bytes.Buffer
-	rc := Run(t.Context(), []string{"ps", "server", "--user", "a", "--password-stdin", "-f", file}, Deps{Stdout: io.Discard, Stderr: &errout, Stdin: strings.NewReader(" test-secret \r\n"), Getenv: func(string) string { t.Error("read environment despite stdin"); return "" }, Execute: func(_ context.Context, r remote.Request, _, _ io.Writer) (int, error) {
+	rc := Run(t.Context(), []string{"ps", "server", "--user", "a", "--password-stdin", "-f", file}, Deps{Stdout: io.Discard, Stderr: &errout, Stdin: strings.NewReader(" test-secret \r\n"), Getenv: func(name string) string {
+		if name == "WINRM_PASSWORD" {
+			t.Error("read password environment despite stdin")
+		}
+		return ""
+	}, Execute: func(_ context.Context, r remote.Request, _, _ io.Writer) (int, error) {
 		if r.Password != " test-secret " || r.Command != "Write-Output 'file'" {
 			t.Error("bad request")
 		}
@@ -100,7 +115,12 @@ func TestLocalErrors(t *testing.T) {
 	}{{"network", errors.New("contains test-secret"), 202}, {"timeout", context.DeadlineExceeded, 203}, {"cancel", context.Canceled, 204}} {
 		t.Run(tt.name, func(t *testing.T) {
 			var output bytes.Buffer
-			rc := Run(context.Background(), []string{"run", "server", "--user", "alice", "--timeout", time.Second.String(), "--", "hostname"}, Deps{Stdout: io.Discard, Stderr: &output, Stdin: strings.NewReader(""), Getenv: func(string) string { return "test-secret" }, Execute: func(context.Context, remote.Request, io.Writer, io.Writer) (int, error) { return 0, tt.err }})
+			rc := Run(context.Background(), []string{"run", "server", "--user", "alice", "--timeout", time.Second.String(), "--", "hostname"}, Deps{Stdout: io.Discard, Stderr: &output, Stdin: strings.NewReader(""), Getenv: func(name string) string {
+				if name == "WINRM_PASSWORD" {
+					return "test-secret"
+				}
+				return ""
+			}, Execute: func(context.Context, remote.Request, io.Writer, io.Writer) (int, error) { return 0, tt.err }})
 			if rc != tt.rc || strings.Contains(output.String(), "test-secret") {
 				t.Errorf("rc=%d output=%q", rc, output.String())
 			}

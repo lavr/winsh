@@ -4,7 +4,9 @@ go 1.26.6
 
 require (
 	github.com/bodgit/ntlmssp v0.0.0-20240506230425-31973bb52d9b
+	github.com/joho/godotenv v1.5.1
 	github.com/masterzen/winrm v0.0.0-20260121214629-2957497186ed
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/text v0.41.0
 )
 

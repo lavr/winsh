@@ -10,8 +10,9 @@ vendor-neutral and use example.com domains. Never commit credentials.
 - Run `make check integration cross-build` before publishing changes.
 - Tests requiring a real Windows endpoint use the integration build tag and
   explicit WINSH_TEST_ENDPOINT/WINSH_TEST_USER/WINSH_TEST_PASSWORD variables.
-- Passwords are accepted only through environment variables or stdin, never a
-  command-line value, config file, diagnostic trace, or cache.
+- Passwords may come from environment variables, stdin, or explicitly configured
+  YAML plain/base64/literal/env values. Never accept a password argument, print
+  passwords in config views/diagnostics, or cache resolved secrets.
 - Never downgrade encrypted HTTP SOAP to unencrypted data, disable TLS
   verification, retry an uncertain remote command, or follow HTTP redirects.
 

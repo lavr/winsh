@@ -19,19 +19,28 @@ type Deps struct {
 	Stdin          io.Reader
 	Stdout, Stderr io.Writer
 	Getenv         func(string) string
+	LookupEnv      func(string) (string, bool)
 	Execute        func(context.Context, remote.Request, io.Writer, io.Writer) (int, error)
 	Version        string
 }
 
 type options struct {
-	request                          remote.Request
-	passwordEnv, file                string
-	passwordStdin, envExplicit, help bool
-	timeout                          time.Duration
-	verbose                          int
+	request                                remote.Request
+	passwordEnv, file                      string
+	passwordStdin, envExplicit, help       bool
+	timeout                                time.Duration
+	verbose                                int
+	configPath, contextName, passwordValue string
+	configuredPassword                     bool
 }
 
 func Run(ctx context.Context, args []string, d Deps) int {
+	var globalErr error
+	args, globalErr = normalizeGlobals(args)
+	if globalErr != nil {
+		fmt.Fprintln(d.Stderr, "winsh:", globalErr)
+		return 201
+	}
 	if len(args) == 0 {
 		usage(d.Stderr)
 		return 201
@@ -43,12 +52,14 @@ func Run(ctx context.Context, args []string, d Deps) int {
 	case "--version", "version":
 		fmt.Fprintln(d.Stdout, "winsh", d.Version)
 		return 0
+	case "config":
+		return runConfig(args[1:], d)
 	case "run", "ps":
 	default:
 		fmt.Fprintln(d.Stderr, "winsh: expected run or ps; see --help")
 		return 201
 	}
-	o, err := parse(args)
+	o, err := parse(args, d)
 	if err != nil {
 		fmt.Fprintln(d.Stderr, "winsh:", err)
 		return 201
@@ -61,7 +72,12 @@ func Run(ctx context.Context, args []string, d Deps) int {
 	if lookup == nil {
 		lookup = os.Getenv
 	}
-	password, err := secret.ReadContext(ctx, o.passwordEnv, o.passwordStdin, d.Stdin, lookup)
+	var password string
+	if o.configuredPassword {
+		password = o.passwordValue
+	} else {
+		password, err = secret.ReadContext(ctx, o.passwordEnv, o.passwordStdin, d.Stdin, lookup)
+	}
 	if ctx.Err() != nil {
 		fmt.Fprintln(d.Stderr, "winsh:", ctx.Err())
 		return 204
@@ -92,7 +108,7 @@ func Run(ctx context.Context, args []string, d Deps) int {
 	return code
 }
 
-func parse(args []string) (options, error) {
+func parse(args []string, d Deps) (options, error) {
 	o := options{passwordEnv: "WINRM_PASSWORD", timeout: 60 * time.Second}
 	o.request.PowerShell = args[0] == "ps"
 	var host, domain string
@@ -128,7 +144,7 @@ func parse(args []string) (options, error) {
 		}
 		name, value, inline := strings.Cut(a, "=")
 		switch name {
-		case "--endpoint", "--target-host", "--user", "--domain", "--auth", "--password-env", "--timeout", "--codepage", "-f":
+		case "--config", "--context", "--endpoint", "--target-host", "--user", "--domain", "--auth", "--password-env", "--timeout", "--codepage", "-f":
 		default:
 			return o, errors.New("unknown option; see --help (password values are never accepted as flags)")
 		}
@@ -144,6 +160,10 @@ func parse(args []string) (options, error) {
 			value = args[i]
 		}
 		switch name {
+		case "--config":
+			o.configPath = value
+		case "--context":
+			o.contextName = value
 		case "--endpoint":
 			o.request.Endpoint = value
 		case "--target-host":
@@ -184,6 +204,9 @@ func parse(args []string) (options, error) {
 	}
 	if o.request.PowerShell && o.request.Codepage != "" && o.request.Codepage != "utf-8" {
 		return o, errors.New("PowerShell output is UTF-8; --codepage applies to run")
+	}
+	if err := applyConfig(&o, &host, &domain, seen, d); err != nil {
+		return o, err
 	}
 	if o.request.User == "" || strings.ContainsAny(o.request.User, "\r\n\x00") {
 		return o, errors.New("--user is required")
@@ -242,8 +265,14 @@ Usage:
   winsh run <host> [options] -- <cmd shell text ...>
   winsh ps  <host> [options] -- <PowerShell script ...>
   winsh ps  <host> [options] -f script.ps1
+  winsh [--config PATH] config get-contexts|current-context|view
+  winsh [--config PATH] config use-context NAME
+
+Host and credentials may be supplied by the selected configuration context.
 
 Options:
+  --config PATH          YAML config (or WINSH_CONFIG)
+  --context NAME         Override current_context
   --endpoint URL         HTTP(S) /wsman URL; replaces host network address
   --user USER            DOMAIN\user, user@domain or local user
   --domain DOMAIN        Domain for an unqualified user
