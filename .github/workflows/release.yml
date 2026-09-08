@@ -1,0 +1,52 @@
+name: Release
+on:
+  push:
+    tags: ['v[0-9]*']
+permissions:
+  contents: read
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build archives
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          make cross-build
+          mkdir -p archives
+          for target in linux-amd64 linux-arm64 darwin-arm64; do
+            mkdir -p "dist/$target"
+            cp "dist/winsh-$target" "dist/$target/winsh"
+            cp LICENSE README.md "dist/$target/"
+            tar -czf "archives/winsh-$VERSION-$target.tar.gz" -C "dist/$target" winsh LICENSE README.md
+          done
+          mkdir -p dist/windows-amd64
+          cp dist/winsh-windows-amd64.exe dist/windows-amd64/winsh.exe
+          cp LICENSE README.md dist/windows-amd64/
+          (cd dist/windows-amd64 && zip "../../archives/winsh-$VERSION-windows-amd64.zip" winsh.exe LICENSE README.md)
+          (cd archives && sha256sum winsh-* > SHA256SUMS)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release
+          path: archives/*
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: release
+          path: archives
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: archives/*
