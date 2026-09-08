@@ -61,7 +61,7 @@ func Run(ctx context.Context, args []string, d Deps) int {
 	if lookup == nil {
 		lookup = os.Getenv
 	}
-	password, err := secret.Read(o.passwordEnv, o.passwordStdin, d.Stdin, lookup)
+	password, err := secret.ReadContext(ctx, o.passwordEnv, o.passwordStdin, d.Stdin, lookup)
 	if ctx.Err() != nil {
 		fmt.Fprintln(d.Stderr, "winsh:", ctx.Err())
 		return 204

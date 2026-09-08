@@ -7,3 +7,5 @@
 - Separate output streams, remote exit status, timeout and cancellation cleanup.
 - UTF-8 PowerShell and optional CP866/CP1251 decoding for cmd output.
 - Tests, four-platform static builds and GitHub Actions release workflow.
+
+- Cancel a blocked password read on Ctrl-C, including real OS stdin pipes.

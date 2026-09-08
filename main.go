@@ -20,7 +20,8 @@ func main() {
 }
 
 func runCLI(ctx context.Context, args []string, stdin io.ReadCloser, stdout, stderr io.Writer) int {
-	// The process owns stdin. Closing it wakes a password read on cancellation.
+	// The process owns stdin. Attempt to close it on cancellation; secret.ReadContext
+	// can return even on systems where closing a file cannot wake a blocked read.
 	stopInput := context.AfterFunc(ctx, func() { _ = stdin.Close() })
 	defer stopInput()
 	return cmd.Run(ctx, args, cmd.Deps{Stdin: stdin, Stdout: stdout, Stderr: stderr, Getenv: os.Getenv, Execute: remote.Run, Version: version})
