@@ -121,6 +121,48 @@ func TestRunWithPostersCreateResponseLost(t *testing.T) {
 	}
 }
 
+func TestRunWithPostersCreateNotSentIsNotUnknown(t *testing.T) {
+	command := controlPostFunc(func(context.Context, string) (string, error) {
+		return "", unsent(errors.New("NTLM connection is closed"))
+	})
+	cleanup := controlPostFunc(func(context.Context, string) (string, error) {
+		t.Fatal("no Shell to clean")
+		return "", nil
+	})
+	_, err := RunWithPosters(t.Context(), Request{Endpoint: "http://localhost:5985/wsman", Command: "hostname"}, io.Discard, io.Discard, command, cleanup)
+	if !errors.Is(err, ErrNotStarted) || errors.Is(err, ErrRemoteStateUnknown) || err.Error() != "NTLM connection is closed" {
+		t.Fatalf("unsent Shell Create = %v", err)
+	}
+}
+
+func TestRunWithPostersUnsentSendAfterStartIsNotNotStarted(t *testing.T) {
+	command := controlPostFunc(func(ctx context.Context, body string) (string, error) {
+		switch {
+		case strings.Contains(body, transferURI+"Create"):
+			return envelope(transferURI+"CreateResponse", `<rsp:Shell><rsp:ShellId>shell-1</rsp:ShellId></rsp:Shell>`), nil
+		case strings.Contains(body, shellURI+"Command"):
+			return envelope(shellURI+"CommandResponse", `<rsp:CommandResponse><rsp:CommandId>command-1</rsp:CommandId></rsp:CommandResponse>`), nil
+		default:
+			return "", unsent(errors.New("NTLM connection is closed"))
+		}
+	})
+	var deleted bool
+	cleanup := controlPostFunc(func(ctx context.Context, body string) (string, error) {
+		switch {
+		case strings.Contains(body, shellURI+"Signal"):
+			return envelope(shellURI+"SignalResponse", ""), nil
+		case strings.Contains(body, transferURI+"Delete"):
+			deleted = true
+			return envelope(transferURI+"DeleteResponse", ""), nil
+		}
+		return "", errors.New("unexpected cleanup action")
+	})
+	_, err := RunWithPosters(t.Context(), Request{Endpoint: "http://localhost:5985/wsman", Command: "hostname"}, io.Discard, io.Discard, command, cleanup)
+	if err == nil || errors.Is(err, ErrNotStarted) || !deleted {
+		t.Fatalf("started command reported as not started: err=%v deleted=%v", err, deleted)
+	}
+}
+
 func TestRunWithPostersCancellationUsesCleanupLane(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

@@ -140,7 +140,7 @@ func TestMasterStartsReusesAndIdles(t *testing.T) {
 	configureTestChild(t, 0)
 	path := filepath.Join(shortControlDir(t), "c.sock")
 	identity := testIdentity()
-	settings := Settings{Mode: "auto", Path: path, Persist: 350 * time.Millisecond}
+	settings := Settings{Mode: "auto", Path: path, Persist: MinPersist}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	got, err := StartOrConnect(ctx, identity, settings, testBootstrap(identity))
@@ -158,7 +158,7 @@ func TestMasterStartsReusesAndIdles(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatalf("socket mode = %v, %v", info, err)
 	}
-	if _, err := StartOrConnect(ctx, identity, Settings{Mode: "auto", Path: path, Persist: time.Second}, func() (Bootstrap, error) {
+	if _, err := StartOrConnect(ctx, identity, Settings{Mode: "auto", Path: path, Persist: 2 * time.Second}, func() (Bootstrap, error) {
 		t.Error("resolved password despite persist mismatch")
 		return Bootstrap{}, ErrProtocol
 	}); err == nil {

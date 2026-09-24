@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lavr/winsh/internal/config"
+	"github.com/lavr/winsh/internal/control"
 	"github.com/lavr/winsh/internal/secret"
 )
 
@@ -145,8 +146,8 @@ func applyConfig(o *options, host, domain *string, seen map[string]bool, d Deps)
 
 func parseControlPersist(value string) (time.Duration, error) {
 	persist, err := time.ParseDuration(value)
-	if err != nil || persist <= 0 || persist > time.Hour {
-		return 0, errors.New("control persist must be between 1ns and 1h")
+	if err != nil || persist < control.MinPersist || persist > time.Hour {
+		return 0, errors.New("control persist must be between 1s and 1h")
 	}
 	return persist, nil
 }

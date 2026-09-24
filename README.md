@@ -69,12 +69,15 @@ The first `--control=auto` call starts a local master and reads the normal
 password source once. Later calls with the same endpoint, account, TLS target
 and trust settings use that master without reading password stdin or resolving
 the configured password again. The master retains authenticated NTLM sessions,
-not the resolved password. Each command still gets its own remote Shell and
+not the resolved password. While idle it sends a WS-Management Identify on
+each connection every 30 seconds, so the server does not close them; if that
+fails, the master finishes any active command and exits, and the next call
+starts a new master. Each command still gets its own remote Shell and
 exit status; PowerShell variables, working directory and processes do not
 persist between calls. `--control=off` forces standalone execution.
 
 The master exits after five idle minutes by default. Use
-`--control-persist=10m` (positive, at most one hour) or YAML
+`--control-persist=10m` (from one second to one hour) or YAML
 `defaults.control_persist` to change this; later calls must use the same
 duration. `defaults.control_master: auto` enables reuse for a context.
 `--control-path` or `defaults.control_path` selects a Unix socket inside a
@@ -90,7 +93,10 @@ at the same path. Explicit CA sources replace system roots for that master.
 One command runs at a time and up to 16 others can wait. The command timeout
 includes master startup and queue time; cleanup has a separate five-second
 budget. A connection or local reply lost after remote dispatch has an uncertain
-outcome and is never replayed automatically. If the command connection fails,
+outcome and is never replayed automatically. Only `not-started` guarantees that
+the command never ran; after any other control failure, including
+`unavailable`, it may have done part of its work, so do not treat the failure
+as permission to repeat it. If the command connection fails,
 the master tries Signal/Delete on a separate authenticated cleanup connection.
 `upload` and `download` do not use the command master in this version.
 

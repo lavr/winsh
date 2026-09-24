@@ -5,6 +5,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -31,6 +32,11 @@ func dispatchEnvelope(action, body string) string {
 
 func dispatchFixture(t *testing.T, execute func(context.Context, Call, io.Writer, io.Writer) (int, error)) (*masterServer, string) {
 	t.Helper()
+	return dispatchFixtureWith(t, execute, nil)
+}
+
+func dispatchFixtureWith(t *testing.T, execute func(context.Context, Call, io.Writer, io.Writer) (int, error), configure func(*masterServer)) (*masterServer, string) {
+	t.Helper()
 	path := filepath.Join(shortControlDir(t), "c.sock")
 	listener, err := net.Listen("unix", path)
 	if err != nil {
@@ -41,6 +47,9 @@ func dispatchFixture(t *testing.T, execute func(context.Context, Call, io.Writer
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	server := newMasterServer(ctx, listener, testIdentity(), time.Second, execute)
+	if configure != nil {
+		configure(server)
+	}
 	done := make(chan error, 1)
 	go func() { done <- server.serve() }()
 	t.Cleanup(func() {
@@ -280,5 +289,104 @@ func TestMasterDispatchDisconnectCleansKnownRemoteIDs(t *testing.T) {
 	cleanupMu.Unlock()
 	if len(actions) != 2 || actions[0] != "signal" || actions[1] != "delete" || commands.Load() != 1 {
 		t.Fatalf("cleanup=%v dispatched=%d", actions, commands.Load())
+	}
+}
+
+func waitStopped(t *testing.T, server *masterServer) {
+	t.Helper()
+	select {
+	case <-server.stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("master did not stop")
+	}
+}
+
+func TestMasterHeartbeatFailureStopsIdleMaster(t *testing.T) {
+	var beats atomic.Int32
+	server, path := dispatchFixtureWith(t, func(context.Context, Call, io.Writer, io.Writer) (int, error) {
+		t.Error("executed a command after heartbeat failure")
+		return 0, nil
+	}, func(s *masterServer) {
+		s.heartbeatEvery = 10 * time.Millisecond
+		s.heartbeat = func(context.Context) error {
+			if beats.Add(1) < 3 {
+				return nil
+			}
+			return errors.New("lane closed")
+		}
+	})
+	waitStopped(t, server)
+	if _, err := Invoke(t.Context(), path, testCall(time.Now().Add(time.Second)), io.Discard, io.Discard); err == nil {
+		t.Fatal("stopped master accepted a command")
+	}
+	if beats.Load() != 3 {
+		t.Fatalf("heartbeat continued after failure: %d beats", beats.Load())
+	}
+}
+
+func TestMasterHeartbeatFailureLetsActiveCommandFinish(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	failed := make(chan struct{})
+	var once sync.Once
+	server, path := dispatchFixtureWith(t, func(ctx context.Context, call Call, stdout, stderr io.Writer) (int, error) {
+		close(started)
+		<-release
+		_, _ = io.WriteString(stdout, "ok")
+		return 7, nil
+	}, func(s *masterServer) {
+		s.heartbeatEvery = 10 * time.Millisecond
+		s.heartbeat = func(context.Context) error {
+			select {
+			case <-started:
+				once.Do(func() { close(failed) })
+				return errors.New("cleanup lane closed")
+			default:
+				return nil
+			}
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	first := make(chan Result, 1)
+	go func() {
+		result, err := Invoke(ctx, path, testCall(time.Now().Add(2*time.Second)), io.Discard, io.Discard)
+		if err != nil {
+			t.Error(err)
+		}
+		first <- result
+	}()
+	<-started
+	queued := make(chan Result, 1)
+	go func() {
+		result, err := Invoke(ctx, path, testCall(time.Now().Add(2*time.Second)), io.Discard, io.Discard)
+		if err != nil {
+			t.Error(err)
+		}
+		queued <- result
+	}()
+	<-failed
+	if result := <-queued; result.Category != CategoryNotStarted {
+		t.Fatalf("queued command after heartbeat failure = %+v", result)
+	}
+	select {
+	case <-server.stopped:
+		t.Fatal("master stopped before the active command finished")
+	default:
+	}
+	close(release)
+	if result := <-first; result.Category != "" || result.ExitCode != 7 {
+		t.Fatalf("active command result = %+v", result)
+	}
+	waitStopped(t, server)
+}
+
+func TestCategoryFromNotStarted(t *testing.T) {
+	err := fmt.Errorf("create: %w", remote.ErrNotStarted)
+	if got := categoryFromError(err); got != CategoryNotStarted {
+		t.Fatalf("category = %q", got)
+	}
+	if got := categoryFromError(errors.Join(err, remote.ErrRemoteStateUnknown)); got != CategoryRemoteStateUnknown {
+		t.Fatalf("unknown state lost priority: %q", got)
 	}
 }

@@ -51,7 +51,8 @@ func (t *transport) post(ctx context.Context, message string) (string, error) {
 func (t *transport) postOnce(ctx context.Context, message string) (string, error) {
 	p, err := authenticateConnection(ctx, t.request)
 	if err != nil {
-		return "", err
+		// NTLM handshakes carry empty bodies; no SOAP request was sent.
+		return "", unsent(err)
 	}
 	defer p.Close()
 	return p.Post(ctx, message)

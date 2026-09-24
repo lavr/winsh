@@ -7,9 +7,31 @@ import (
 	"time"
 )
 
-// ErrRemoteStateUnknown means cleanup could not confirm that the remote Shell
-// was deleted. It contains no server-supplied text.
-var ErrRemoteStateUnknown = errors.New("remote state unknown after cleanup failure")
+// ErrRemoteStateUnknown means the outcome of a dispatched request is uncertain:
+// a Shell may exist that cleanup could not confirm deleted. It contains no
+// server-supplied text.
+var ErrRemoteStateUnknown = errors.New("remote state unknown")
+
+// ErrNotStarted means the Shell Create request was never sent, so no remote
+// Shell or command exists. It is matched with errors.Is and never changes the
+// wrapped error's text.
+var ErrNotStarted = errors.New("remote command was not started")
+
+// errUnsent marks a failure proven to precede sending one SOAP request. Only
+// an unsent Shell Create means the command did not start; an unsent Send or
+// Receive belongs to a command that is already running.
+var errUnsent = errors.New("SOAP request was not sent")
+
+type markedError struct {
+	error
+	mark error
+}
+
+func (e markedError) Unwrap() error        { return e.error }
+func (e markedError) Is(target error) bool { return target == e.mark }
+
+func unsent(err error) error     { return markedError{err, errUnsent} }
+func notStarted(err error) error { return markedError{err, ErrNotStarted} }
 
 // ErrCleanupFailed means Shell deletion was confirmed, but another required
 // cleanup step failed.

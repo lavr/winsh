@@ -102,6 +102,9 @@ func startSessionWithCleanup(ctx context.Context, r Request, p, cleanup poster) 
 	}
 	reply, err := p.post(ctx, body)
 	openMsg.Free()
+	if errors.Is(err, errUnsent) {
+		return nil, notStarted(err)
+	}
 	if err != nil {
 		return nil, errors.Join(err, ErrRemoteStateUnknown)
 	}

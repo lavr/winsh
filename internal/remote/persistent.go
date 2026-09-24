@@ -33,7 +33,8 @@ type persistentPoster struct {
 	transport *http.Transport
 	session   securitySession
 	encrypted bool
-	failed    bool // guarded by mu
+	failed    bool      // guarded by mu
+	lastUsed  time.Time // guarded by mu
 	closed    atomic.Bool
 	cancel    context.CancelFunc
 	closedCtx context.Context
@@ -65,6 +66,10 @@ func openPersistentWithRetries(ctx context.Context, r Request) (*persistentPoste
 	return p, err
 }
 
+// errReplayRefused is returned instead of opening a second TCP connection for
+// an authenticated lane. Dial failure means this request was never written.
+var errReplayRefused = errors.New("NTLM connection closed; refusing to replay authentication or command")
+
 func pinnedHTTPTransport(targetHost string) (*http.Transport, *atomic.Bool) {
 	dialer := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	dialed := &atomic.Bool{}
@@ -79,7 +84,7 @@ func pinnedHTTPTransport(targetHost string) (*http.Transport, *atomic.Bool) {
 		// A WinRM endpoint must never inherit HTTP_PROXY.
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			if dialed.Swap(true) {
-				return nil, errors.New("NTLM connection closed; refusing to replay authentication or command")
+				return nil, errReplayRefused
 			}
 			return dialer.DialContext(ctx, network, address)
 		},
@@ -183,17 +188,56 @@ func authenticateConnection(ctx context.Context, r Request) (p *persistentPoster
 		return nil, errors.New("NTLM authentication did not establish a session")
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
-	return &persistentPoster{endpoint: r.Endpoint, client: client, transport: rt, session: ntlm.SecuritySession(), encrypted: encrypted, cancel: cancel, closedCtx: lifetime}, nil
+	return &persistentPoster{endpoint: r.Endpoint, client: client, transport: rt, session: ntlm.SecuritySession(), encrypted: encrypted, cancel: cancel, closedCtx: lifetime, lastUsed: time.Now()}, nil
 }
 
 func (p *persistentPoster) Post(ctx context.Context, message string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.postLocked(ctx, message)
+}
+
+const identifyRequest = `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd"><s:Header/><s:Body><wsmid:Identify/></s:Body></s:Envelope>`
+
+// KeepAlive sends an authenticated WS-Management Identify when the lane has
+// been idle for at least idle, so the server does not close the connection
+// that carries the NTLM session. A lane held by another exchange is in use and
+// is skipped without waiting. Identify changes no remote state; any failure
+// still marks the lane failed because its NTLM sequence is then uncertain.
+func (p *persistentPoster) KeepAlive(ctx context.Context, idle time.Duration) error {
+	if !p.mu.TryLock() {
+		return nil
+	}
+	defer p.mu.Unlock()
 	if p.closed.Load() || p.failed {
-		return "", errors.New("NTLM connection is closed")
+		return errors.New("NTLM connection is closed")
+	}
+	if time.Since(p.lastUsed) < idle {
+		return nil
+	}
+	reply, err := p.postLocked(ctx, identifyRequest)
+	if err != nil {
+		return err
+	}
+	var envelope struct {
+		Body struct {
+			Response *struct{} `xml:"http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd IdentifyResponse"`
+		} `xml:"http://www.w3.org/2003/05/soap-envelope Body"`
+	}
+	if xml.Unmarshal([]byte(reply), &envelope) != nil || envelope.Body.Response == nil {
+		p.fail()
+		return errors.New("invalid WS-Management identify response")
+	}
+	return nil
+}
+
+// postLocked is called only with mu held.
+func (p *persistentPoster) postLocked(ctx context.Context, message string) (string, error) {
+	if p.closed.Load() || p.failed {
+		return "", unsent(errors.New("NTLM connection is closed"))
 	}
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return "", unsent(err)
 	}
 	requestCtx := ctx
 	var stop func() bool
@@ -210,13 +254,17 @@ func (p *persistentPoster) Post(ctx context.Context, message string) (string, er
 		payload, contentType, err = sealMessage(p.session, payload)
 		if err != nil {
 			p.fail()
-			return "", err
+			return "", unsent(err)
 		}
 	}
 	status, headers, data, err := sendHTTP(requestCtx, p.client, p.endpoint, "", payload, contentType)
 	if err != nil {
 		p.fail()
-		return "", fmt.Errorf("WinRM SOAP exchange: %w", err)
+		err = fmt.Errorf("WinRM SOAP exchange: %w", err)
+		if errors.Is(err, errReplayRefused) {
+			return "", unsent(err)
+		}
+		return "", err
 	}
 	if status != http.StatusOK && status != http.StatusInternalServerError {
 		p.fail()
@@ -240,6 +288,7 @@ func (p *persistentPoster) Post(ctx context.Context, message string) (string, er
 		p.fail()
 		return "", errors.New("invalid SOAP response")
 	}
+	p.lastUsed = time.Now()
 	return string(data), nil
 }
 

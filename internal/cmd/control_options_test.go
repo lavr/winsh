@@ -19,7 +19,7 @@ func TestControlOptions(t *testing.T) {
 	if err != nil || o.control.Mode != "auto" || o.control.Persist != 10*time.Minute || o.control.Path != "/tmp/winsh.sock" {
 		t.Fatalf("configured control = %+v, %v", o.control, err)
 	}
-	for _, option := range []string{"--control=invalid", "--control-persist=0", "--control-persist=61m", "--control-persist=bogus", "--control-path="} {
+	for _, option := range []string{"--control=invalid", "--control-persist=0", "--control-persist=500ms", "--control-persist=61m", "--control-persist=bogus", "--control-path="} {
 		args := []string{"run", "server.example.com", "--user", "alice", option, "--", "hostname"}
 		if _, err := parse(args, Deps{Getenv: func(string) string { return "" }}); err == nil {
 			t.Errorf("accepted %s", option)

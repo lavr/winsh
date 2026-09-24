@@ -16,6 +16,11 @@ const maxFramePayload uint32 = 64 * 1024
 
 var ErrProtocol = errors.New("invalid local control protocol")
 
+// MinPersist is the shortest master lifetime. The idle timer starts once the
+// master reports ready, so a shorter value can expire before the client that
+// started the master connects.
+const MinPersist = time.Second
+
 type frameType byte
 
 const (

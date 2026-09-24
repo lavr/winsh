@@ -39,6 +39,12 @@ type masterServer struct {
 	idle    *time.Timer
 	clients sync.WaitGroup
 	workers sync.WaitGroup
+	beats   sync.WaitGroup
+
+	// heartbeat, when set, runs every heartbeatEvery to keep the
+	// authenticated connections open while the master waits for commands.
+	heartbeat      func(context.Context) error
+	heartbeatEvery time.Duration
 }
 
 func newMasterServer(ctx context.Context, listener net.Listener, identity Identity, persist time.Duration, execute commandExecutor) *masterServer {
@@ -85,6 +91,10 @@ func (s *masterServer) serve() error {
 		s.mu.Unlock()
 	})
 	defer stop()
+	if s.heartbeat != nil {
+		s.beats.Add(1)
+		go s.keepAlive()
+	}
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
@@ -94,6 +104,7 @@ func (s *masterServer) serve() error {
 			s.mu.Unlock()
 			s.workers.Wait()
 			s.clients.Wait()
+			s.beats.Wait()
 			if errors.Is(err, net.ErrClosed) || s.ctx.Err() != nil {
 				return nil
 			}
@@ -105,6 +116,45 @@ func (s *masterServer) serve() error {
 			defer conn.Close()
 			s.handle(conn)
 		}()
+	}
+}
+
+// keepAlive stops accepting commands after the first failed heartbeat. An
+// active command finishes on its own lanes and reports its own result; run()
+// then shuts the master down because exiting is set. serve() waits for it,
+// so no heartbeat is in flight when the lanes close.
+func (s *masterServer) keepAlive() {
+	defer s.beats.Done()
+	ctx, cancel := context.WithCancel(s.ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-s.stopped:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	ticker := time.NewTicker(s.heartbeatEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if s.heartbeat(ctx) != nil {
+			s.mu.Lock()
+			s.exiting = true
+			s.rejectQueueLocked()
+			if s.active == nil {
+				s.shutdownLocked()
+			}
+			s.mu.Unlock()
+			return
+		}
 	}
 }
 
@@ -309,6 +359,8 @@ func categoryFromError(err error) string {
 	switch {
 	case errors.Is(err, remote.ErrRemoteStateUnknown):
 		return CategoryRemoteStateUnknown
+	case errors.Is(err, remote.ErrNotStarted):
+		return CategoryNotStarted
 	case errors.Is(err, remote.ErrCleanupFailed):
 		return CategoryCleanupFailed
 	case errors.Is(err, context.DeadlineExceeded):

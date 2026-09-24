@@ -235,7 +235,7 @@ func serveWithAuth(ctx context.Context, bootstrapFD uintptr, auth func(context.C
 	if json.NewDecoder(io.LimitReader(conn, bootstrapLimit)).Decode(&boot) != nil {
 		return errors.New("cannot read control bootstrap")
 	}
-	if boot.Socket == "" || boot.Persist <= 0 || boot.Persist > time.Hour || boot.Endpoint != boot.Identity.Endpoint || boot.User != boot.Identity.User || boot.TargetHost != boot.Identity.TargetHost {
+	if boot.Socket == "" || boot.Persist < MinPersist || boot.Persist > time.Hour || boot.Endpoint != boot.Identity.Endpoint || boot.User != boot.Identity.User || boot.TargetHost != boot.Identity.TargetHost {
 		return errors.New("invalid control bootstrap target")
 	}
 	// Parent disappearance before readiness cancels authentication. The
@@ -276,5 +276,39 @@ func serveReady(ctx context.Context, listener net.Listener, identity Identity, p
 		request := remote.Request{Endpoint: identity.Endpoint, TargetHost: identity.TargetHost, User: identity.User, Command: call.Command, PowerShell: call.PowerShell, Codepage: call.Codepage}
 		return remote.RunWithPosters(ctx, request, stdout, stderr, command, cleanup)
 	}
-	return newMasterServer(ctx, listener, identity, persist, execute).serve()
+	server := newMasterServer(ctx, listener, identity, persist, execute)
+	server.heartbeat = func(ctx context.Context) error {
+		for _, lane := range []remote.Poster{command, cleanup} {
+			if err := keepAliveLane(ctx, lane); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	server.heartbeatEvery = heartbeatInterval
+	return server.serve()
+}
+
+// Windows HTTP.sys closes idle connections after 120 seconds by default, and
+// an administrator may lower that. A lane idle for heartbeatInterval gets an
+// Identify at the next tick, so it is never idle much beyond twice that.
+// heartbeatTimeout bounds how long a cleanup waits behind a heartbeat on its
+// lane, within the five-second cleanup budget.
+const (
+	heartbeatInterval = 30 * time.Second
+	heartbeatTimeout  = 2 * time.Second
+)
+
+type keepAliver interface {
+	KeepAlive(context.Context, time.Duration) error
+}
+
+func keepAliveLane(ctx context.Context, lane remote.Poster) error {
+	k, ok := lane.(keepAliver)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, heartbeatTimeout)
+	defer cancel()
+	return k.KeepAlive(ctx, heartbeatInterval)
 }

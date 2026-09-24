@@ -345,7 +345,7 @@ Options:
   --target-host NAME     TLS certificate name when using a tunnel
   --timeout DURATION    Overall timeout (run/ps 60s; transfers 30m)
   --control=auto|off   Reuse command NTLM connections (run/ps; default off)
-  --control-persist DURATION  Master idle lifetime (default 5m; max 1h)
+  --control-persist DURATION  Master idle lifetime (default 5m; 1s to 1h)
   --control-path PATH  Explicit private Unix socket path
   --force               Replace an existing transfer destination
   --codepage CODEPAGE    run encoding: raw/utf-8 (default WinRS UTF-8), 866 or 1251

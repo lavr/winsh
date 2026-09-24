@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -360,5 +361,105 @@ func TestPersistentPosterCancelIsTerminal(t *testing.T) {
 	}
 	if _, err := p.Post(t.Context(), "again"); err == nil {
 		t.Fatal("canceled lane accepted another request")
+	}
+}
+
+func identifyServer(t *testing.T, reply string, status int, requests *atomic.Int32) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		plain, err := unsealMessage(testSession{}, body, r.Header.Get("Content-Type"))
+		if err != nil || !strings.Contains(string(plain), "wsmanidentity.xsd") || !strings.Contains(string(plain), "Identify/>") {
+			t.Errorf("unexpected keepalive request: %q, %v", plain, err)
+		}
+		frame, contentType, err := sealMessage(testSession{}, []byte(reply))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(status)
+		_, _ = w.Write(frame)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestPersistentPosterKeepAliveIdentifiesOnlyWhenIdle(t *testing.T) {
+	const identify = `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><wsmid:IdentifyResponse xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd"><wsmid:ProtocolVersion>http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd</wsmid:ProtocolVersion></wsmid:IdentifyResponse></s:Body></s:Envelope>`
+	var requests atomic.Int32
+	server := identifyServer(t, identify, http.StatusOK, &requests)
+	rt, _ := pinnedHTTPTransport("")
+	p := &persistentPoster{endpoint: server.URL, client: &http.Client{Transport: rt}, transport: rt, encrypted: true, session: testSession{}}
+	defer p.Close()
+	for i := 0; i < 2; i++ {
+		if err := p.KeepAlive(t.Context(), time.Minute); err != nil {
+			t.Fatalf("keepalive %d: %v", i, err)
+		}
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("recently used lane sent %d keepalives", requests.Load())
+	}
+	if !p.mu.TryLock() {
+		t.Fatal("keepalive left the lane locked")
+	}
+	p.lastUsed = time.Time{}
+	err := p.KeepAlive(t.Context(), time.Minute)
+	p.mu.Unlock()
+	if err != nil || requests.Load() != 1 {
+		t.Fatalf("busy lane: err=%v requests=%d", err, requests.Load())
+	}
+}
+
+func TestPersistentPosterKeepAliveRejectsFault(t *testing.T) {
+	const fault = `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><s:Fault><s:Code><s:Value>s:Sender</s:Value></s:Code></s:Fault></s:Body></s:Envelope>`
+	var requests atomic.Int32
+	server := identifyServer(t, fault, http.StatusInternalServerError, &requests)
+	rt, _ := pinnedHTTPTransport("")
+	p := &persistentPoster{endpoint: server.URL, client: &http.Client{Transport: rt}, transport: rt, encrypted: true, session: testSession{}}
+	defer p.Close()
+	if err := p.KeepAlive(t.Context(), time.Minute); err == nil {
+		t.Fatal("SOAP fault accepted as keepalive")
+	}
+	if _, err := p.Post(t.Context(), "<soap/>"); !errors.Is(err, errUnsent) || requests.Load() != 1 {
+		t.Fatalf("lane after failed keepalive: err=%v requests=%d", err, requests.Load())
+	}
+}
+
+func TestPersistentPosterRefusedRedialIsUnsent(t *testing.T) {
+	const soap = `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body/></s:Envelope>`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		frame, contentType, _ := sealMessage(testSession{}, []byte(soap))
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Connection", "close")
+		_, _ = w.Write(frame)
+	}))
+	defer server.Close()
+	rt, _ := pinnedHTTPTransport("")
+	p := &persistentPoster{endpoint: server.URL, client: &http.Client{Transport: rt}, transport: rt, encrypted: true, session: testSession{}}
+	defer p.Close()
+	if _, err := p.Post(t.Context(), soap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Post(t.Context(), soap); !errors.Is(err, errUnsent) {
+		t.Fatalf("refused redial not classified as unsent: %v", err)
+	}
+}
+
+func TestPersistentPosterLostResponseIsNotUnsent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	defer server.Close()
+	rt, _ := pinnedHTTPTransport("")
+	p := &persistentPoster{endpoint: server.URL, client: &http.Client{Transport: rt}, transport: rt, encrypted: true, session: testSession{}}
+	defer p.Close()
+	if _, err := p.Post(t.Context(), "<soap/>"); err == nil || errors.Is(err, errUnsent) {
+		t.Fatalf("lost response classified as unsent: %v", err)
 	}
 }
