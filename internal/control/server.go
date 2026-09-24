@@ -259,8 +259,8 @@ func (s *masterServer) enqueue(job *commandJob) string {
 	if s.exiting {
 		return CategoryNotStarted
 	}
-	if job.ctx.Err() != nil {
-		return CategoryTimeout
+	if err := job.ctx.Err(); err != nil {
+		return categoryFromError(err)
 	}
 	s.idle.Stop()
 	if s.active == nil {

@@ -111,6 +111,11 @@ func invokeConn(ctx context.Context, conn net.Conn, call Call, stdout, stderr io
 			if err := decodeStrictJSON(payload, &result); err != nil || result.ExitCode < 0 || uint64(result.ExitCode) > math.MaxUint32 || result.Category != "" && !validCategory(result.Category) {
 				return Result{}, ErrProtocol
 			}
+			if result.Category == "" && commandCtx.Err() != nil {
+				// The command finished, but output read after cancellation
+				// was dropped. Never report that as success.
+				return Result{}, commandCtx.Err()
+			}
 			return result, nil
 		case frameError:
 			category := string(payload)

@@ -436,3 +436,13 @@ func TestMasterDeadlineReportsCleanupResult(t *testing.T) {
 		t.Fatalf("timed-out command = %+v, %v", result, err)
 	}
 }
+
+func TestEnqueueCanceledJobIsCanceled(t *testing.T) {
+	server := newMasterServer(t.Context(), nil, testIdentity(), time.Second, nil)
+	defer server.idle.Stop()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got := server.enqueue(&commandJob{ctx: ctx}); got != CategoryCanceled {
+		t.Fatalf("canceled job category = %q", got)
+	}
+}

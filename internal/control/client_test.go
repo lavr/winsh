@@ -184,3 +184,34 @@ func TestInvokeAmbiguousRequestWriteIsUncertain(t *testing.T) {
 		t.Fatalf("ambiguous request submission = %v", err)
 	}
 }
+
+func TestInvokeSuccessReadAfterCancelIsNotSuccess(t *testing.T) {
+	path := filepath.Join(shortControlDir(t), "c.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _, _ = readFrame(conn)
+		cancel()
+		// The client has half-closed; a finished command's output and
+		// success were already on their way.
+		var b [1]byte
+		_, _ = conn.Read(b[:])
+		_ = writeFrame(conn, frameStdout, []byte("partial"))
+		_ = writeJSONFrame(conn, frameResult, Result{})
+	}()
+	var out strings.Builder
+	result, err := Invoke(ctx, path, Call{Identity: testIdentity(), Command: "hostname", Deadline: time.Now().Add(3 * time.Second), Persist: time.Second}, &out, io.Discard)
+	if !errors.Is(err, context.Canceled) || result.Category != "" || out.Len() != 0 {
+		t.Fatalf("success after cancel = %+v, %v, output %q", result, err, out.String())
+	}
+}
