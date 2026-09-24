@@ -61,7 +61,10 @@ characters, separate stderr, nonzero exit statuses, script files, explicit
 CP866 and execution timeout. The opt-in Go live suite passed on both versions.
 For file transfer, a Windows Server 2016 endpoint passed the small, fault and
 100/200 MiB live suites over encrypted HTTP. A Linux amd64 client also passed
-small upload and download checks with independent destination hashes. Native
-Windows and Linux arm64 clients, HTTPS transfer and Server 2019 transfer remain
-unvalidated. HTTPS remains covered by local TLS tests; no live HTTPS listener
+small upload and download checks with independent destination hashes. File
+transfer from Linux arm64, over HTTPS, or to Server 2019 remains unvalidated.
+HTTPS remains covered by local TLS tests; no live HTTPS listener
 was tested.
+
+Client builds and CI cover Linux amd64/arm64 and macOS arm64. Windows clients
+are unsupported; the real Windows endpoint in the live suite is the server.

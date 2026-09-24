@@ -22,9 +22,10 @@ make build
 ./dist/winsh --help
 ```
 
-`make cross-build` produces static (CGO disabled) binaries for Linux amd64/arm64,
-macOS arm64 and Windows amd64. Future tagged releases will provide archives and
-SHA256SUMS on the [Releases page](https://github.com/lavr/winsh/releases).
+`make cross-build` produces static (CGO disabled) client binaries for Linux
+amd64/arm64 and macOS arm64. Windows clients are unsupported; winsh connects
+to a Windows server over WinRM. Future tagged releases will provide archives
+and SHA256SUMS on the [Releases page](https://github.com/lavr/winsh/releases).
 
 ## Run a command
 
@@ -84,8 +85,8 @@ duration. A CLI timeout takes precedence over YAML. `run` and `ps` retain
 their 60-second default. Transfer has been tested from a macOS arm64 client to
 Windows Server 2016 over NTLM-encrypted HTTP, including 100 MiB and 200 MiB
 round-trips. An amd64 Linux client also completed small upload and download
-checks with independent destination SHA-256 verification. Linux arm64 and
-Windows clients, HTTPS, and Server 2019 remain unvalidated for file transfer;
+checks with independent destination SHA-256 verification. File transfer from
+Linux arm64, over HTTPS, or to Server 2019 remains unvalidated;
 cross-builds alone do not establish compatibility.
 
 ## Configuration and contexts

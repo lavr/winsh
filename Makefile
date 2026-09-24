@@ -29,12 +29,11 @@ check: vet test race
 
 cross-build:
 	@mkdir -p dist
-	@set -e; for target in linux/amd64 linux/arm64 darwin/arm64 windows/amd64; do \
-		os=$${target%/*}; arch=$${target#*/}; ext=; \
-		if [ "$$os" = windows ]; then ext=.exe; fi; \
+	@set -e; for target in linux/amd64 linux/arm64 darwin/arm64; do \
+		os=$${target%/*}; arch=$${target#*/}; \
 		echo "Building $$target"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath \
-			-ldflags='-s -w -X main.version=$(call sq,$(VERSION))' -o "dist/winsh-$$os-$$arch$$ext" .; \
+			-ldflags='-s -w -X main.version=$(call sq,$(VERSION))' -o "dist/winsh-$$os-$$arch" .; \
 	done
 
 clean:

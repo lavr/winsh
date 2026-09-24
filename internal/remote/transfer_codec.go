@@ -328,9 +328,8 @@ var reservedDeviceNames = map[string]bool{
 // filesystem for reparse points or other attributes (Tasks 5/6 do that
 // separately with attribute-based checks).
 //
-// The function intentionally applies Windows rules even when the winsh
-// binary is compiled for a non-Windows host, so the same checks apply on
-// macOS, Linux and Windows clients.
+// The function applies Windows path rules to the remote operand on both
+// Linux and macOS clients.
 func validateRemotePath(p string) error {
 	if p == "" {
 		return errors.New("remote path must not be empty")
