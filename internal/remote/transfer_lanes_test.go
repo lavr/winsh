@@ -219,7 +219,6 @@ func TestTransferLanesPyspnegoInterop(t *testing.T) {
 	if err := s.close(ctx); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	closeLanes()
 	// One entry per authenticated connection: Create, Command and Delete
 	// on three short-lived ones, six Sends on one lane and at least one
 	// timed-out Receive plus the final one on the other.
