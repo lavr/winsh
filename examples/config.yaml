@@ -23,3 +23,5 @@ contexts:
 defaults:
   auth: ntlm
   timeout: 60s
+  # control_master: auto
+  # control_persist: 5m

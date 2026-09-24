@@ -24,6 +24,17 @@ creates a temporary file containing synthetic test credentials and removes it
 on exit. Python/pyspnego are development test dependencies only; GitHub Actions
 runs this test separately from the Go tests.
 
+The same CI job also runs `TestPersistentPyspnegoInterop` and
+`TestRunWithPostersPyspnegoInterop`. These use an independent pyspnego server
+to verify two authenticated connections, multiple sealed SOAP exchanges over
+one command connection, distinct Shell/Command IDs, Signal/Delete cleanup and
+no second NTLM handshake for the next command. Process-level Go tests cover
+the private bootstrap pipe, socket ownership, lock handoff, concurrent starters,
+idle expiry, queue bounds, client cancellation and `control exit`.
+`python scripts/control-smoke.py --binary dist/winsh` drives the real CLI and
+child process through two commands; the second has no available password source.
+It checks the fixture's per-connection SOAP counts and master shutdown.
+
 ## Real Windows smoke test
 
 Configure these environment variables using your usual credential mechanism:
@@ -50,6 +61,15 @@ SHA-256 checks. Test both HTTP with AllowUnencrypted disabled and HTTPS before
 declaring a stable transfer release. Unit tests alone do not establish
 compatibility with a real Windows installation.
 
+For a live ControlMaster check, run two sequential `run`/`ps` commands with
+`--control=auto` against the same authorized endpoint, then `control check`
+and `control exit`. Compare their output and exit codes with standalone mode.
+The first invocation needs the normal password source; reuse and check/exit
+must work without reading it. Confirm that the local socket disappears after
+exit or idle expiry. Record any handshake counts outside the public repository.
+Live ControlMaster behavior has not yet been included in the automated Windows
+integration suite.
+
 Release automation deliberately requires these variables, preventing a skipped
 Windows test from being mistaken for live validation.
 
@@ -65,6 +85,15 @@ small upload and download checks with independent destination hashes. File
 transfer from Linux arm64, over HTTPS, or to Server 2019 remains unvalidated.
 HTTPS remains covered by local TLS tests; no live HTTPS listener
 was tested.
+
+On 2026-09-24, a macOS arm64 client completed a manual ControlMaster check
+against an authorized Windows Server 2016 endpoint over encrypted HTTP. A
+controlled `run` matched standalone output, and a following `ps` succeeded
+with the password source intentionally unavailable and returned its expected
+nonzero exit status. `control check` reported the master alive; `control exit`
+then removed its local socket. Real-server NTLM handshake counts were not
+measured. A local independent pyspnego fixture verified one handshake per
+connection across two commands.
 
 Client builds and CI cover Linux amd64/arm64 and macOS arm64. Windows clients
 are unsupported; the real Windows endpoint in the live suite is the server.

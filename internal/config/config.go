@@ -31,8 +31,11 @@ type Context struct {
 	Credentials string `yaml:"credentials"`
 }
 type Defaults struct {
-	Auth    string `yaml:"auth,omitempty"`
-	Timeout string `yaml:"timeout,omitempty"`
+	Auth           string `yaml:"auth,omitempty"`
+	Timeout        string `yaml:"timeout,omitempty"`
+	ControlMaster  string `yaml:"control_master,omitempty"`
+	ControlPersist string `yaml:"control_persist,omitempty"`
+	ControlPath    string `yaml:"control_path,omitempty"`
 }
 type File struct {
 	CurrentContext string                 `yaml:"current_context,omitempty"`

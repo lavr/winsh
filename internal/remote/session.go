@@ -34,6 +34,7 @@ type session struct {
 	commandID string
 	params    *winrm.Parameters
 	p         poster
+	cleanup   poster
 
 	// Output destinations are set once by receive(); the receive loop
 	// blocks on outReady until they are populated.
@@ -63,6 +64,10 @@ type session struct {
 // the receive loop runs under a derived context so close() can cancel
 // it independently of the caller's deadline.
 func startSession(ctx context.Context, r Request, p poster) (*session, error) {
+	return startSessionWithCleanup(ctx, r, p, p)
+}
+
+func startSessionWithCleanup(ctx context.Context, r Request, p, cleanup poster) (*session, error) {
 	command, err := Command(r.Command, r.PowerShell)
 	if err != nil {
 		return nil, err
@@ -74,6 +79,7 @@ func startSession(ctx context.Context, r Request, p poster) (*session, error) {
 		endpoint:      r.Endpoint,
 		params:        params,
 		p:             p,
+		cleanup:       cleanup,
 		outReady:      make(chan struct{}),
 		recvDone:      make(chan struct{}),
 		lifecycleDone: make(chan struct{}),
@@ -97,14 +103,14 @@ func startSession(ctx context.Context, r Request, p poster) (*session, error) {
 	reply, err := p.post(ctx, body)
 	openMsg.Free()
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, ErrRemoteStateUnknown)
 	}
 	opened, err := parseResponse(reply)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, ErrRemoteStateUnknown)
 	}
 	if opened.Header.Action != wsTransfer+"CreateResponse" || !validID(opened.Body.Shell.ID) {
-		return nil, errors.New("invalid WinRM shell response")
+		return nil, errors.Join(errors.New("invalid WinRM shell response"), ErrRemoteStateUnknown)
 	}
 	s.shellID = opened.Body.Shell.ID
 
@@ -114,16 +120,22 @@ func startSession(ctx context.Context, r Request, p poster) (*session, error) {
 	reply, err = p.post(ctx, execMsg.String())
 	execMsg.Free()
 	if err != nil {
-		s.deleteShellBestEffort()
+		if s.deleteShellBestEffort() != nil {
+			return nil, errors.Join(err, ErrRemoteStateUnknown)
+		}
 		return nil, err
 	}
 	started, err := parseResponse(reply)
 	if err != nil {
-		s.deleteShellBestEffort()
+		if s.deleteShellBestEffort() != nil {
+			return nil, errors.Join(err, ErrRemoteStateUnknown)
+		}
 		return nil, err
 	}
 	if started.Header.Action != wsShell+"CommandResponse" || !validID(started.Body.Command.ID) {
-		s.deleteShellBestEffort()
+		if s.deleteShellBestEffort() != nil {
+			return nil, ErrRemoteStateUnknown
+		}
 		return nil, errors.New("invalid WinRM command response")
 	}
 	s.commandID = started.Body.Command.ID
@@ -249,6 +261,10 @@ func (s *session) sendMessage(body []byte) (string, error) {
 // must be unblocked by their owner; failure to join is reported within ctx's
 // budget, never hidden behind a successful shell deletion.
 func (s *session) close(ctx context.Context) error {
+	return s.closeWith(ctx, s.p, s.p, false)
+}
+
+func (s *session) closeWith(ctx context.Context, primary, fallback poster, signal bool) error {
 	if !s.closed.CompareAndSwap(false, true) {
 		select {
 		case <-s.recvDone:
@@ -270,11 +286,30 @@ func (s *session) close(ctx context.Context) error {
 		}
 	}
 	s.outMu.Unlock()
+	var signalFailed bool
+	deletePoster := primary
+	if signal && s.commandID != "" {
+		msg := winrm.NewSignalRequest(s.endpoint, s.shellID, s.commandID, s.params)
+		reply, err := primary.post(ctx, msg.String())
+		msg.Free()
+		if err == nil {
+			var resp response
+			resp, err = parseResponse(reply)
+			if err == nil && resp.Header.Action != wsShell+"SignalResponse" {
+				err = errors.New("invalid WinRM SignalResponse")
+			}
+		}
+		if err != nil {
+			signalFailed = true
+			deletePoster = fallback
+		}
+	}
 	// Delete even if an arbitrary output writer is stuck; both teardown and
-	// joining share the original cleanup deadline.
+	// joining share the original cleanup deadline. A failed Signal uses the
+	// independent cleanup lane for the distinct Delete request.
 	msg := winrm.NewDeleteShellRequest(s.endpoint, s.shellID, s.params)
 	defer msg.Free()
-	reply, err := s.p.post(ctx, msg.String())
+	reply, err := deletePoster.post(ctx, msg.String())
 	if err == nil {
 		var resp response
 		resp, err = parseResponse(reply)
@@ -284,9 +319,18 @@ func (s *session) close(ctx context.Context) error {
 	}
 	select {
 	case <-s.recvDone:
-		return err
+		if err != nil {
+			return ErrRemoteStateUnknown
+		}
+		if signalFailed {
+			return ErrCleanupFailed
+		}
+		return nil
 	case <-ctx.Done():
-		return errors.Join(err, ctx.Err())
+		if err != nil {
+			return errors.Join(ErrRemoteStateUnknown, ctx.Err())
+		}
+		return errors.Join(ErrCleanupFailed, ctx.Err())
 	}
 }
 
@@ -349,13 +393,21 @@ func (s *session) receiveLoop(ctx context.Context) {
 // budget. Used by startSession when it cannot complete the bootstrap
 // after the shell was already opened; the cleanup is best-effort and
 // never blocks the original error.
-func (s *session) deleteShellBestEffort() {
+func (s *session) deleteShellBestEffort() error {
 	if s.shellID == "" {
-		return
+		return nil
 	}
 	cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	msg := winrm.NewDeleteShellRequest(s.endpoint, s.shellID, s.params)
 	defer msg.Free()
-	_, _ = s.p.post(cleanup, msg.String())
+	reply, err := s.cleanup.post(cleanup, msg.String())
+	if err != nil {
+		return err
+	}
+	resp, err := parseResponse(reply)
+	if err != nil || resp.Header.Action != wsTransfer+"DeleteResponse" {
+		return errors.New("invalid WinRM DeleteResponse")
+	}
+	return nil
 }

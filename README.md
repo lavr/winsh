@@ -53,6 +53,47 @@ allows 8,000 UTF-16 code units for `run` and 8,000 characters for the **encoded*
 PowerShell invocation (roughly 2.7 KiB of script). Larger input fails locally;
 `-f` does not bypass this limit.
 
+## Reuse command connections
+
+On Linux and macOS, `run` and `ps` can share authenticated NTLM connections
+across separate winsh invocations. Control mode is off by default:
+
+```sh
+winsh run server.example.com --user 'EXAMPLE\alice' --control=auto -- hostname
+winsh ps server.example.com --user 'EXAMPLE\alice' --control=auto -- 'Get-Date'
+winsh control check server.example.com --user 'EXAMPLE\alice'
+winsh control exit server.example.com --user 'EXAMPLE\alice'
+```
+
+The first `--control=auto` call starts a local master and reads the normal
+password source once. Later calls with the same endpoint, account, TLS target
+and trust settings use that master without reading password stdin or resolving
+the configured password again. The master retains authenticated NTLM sessions,
+not the resolved password. Each command still gets its own remote Shell and
+exit status; PowerShell variables, working directory and processes do not
+persist between calls. `--control=off` forces standalone execution.
+
+The master exits after five idle minutes by default. Use
+`--control-persist=10m` (positive, at most one hour) or YAML
+`defaults.control_persist` to change this; later calls must use the same
+duration. `defaults.control_master: auto` enables reuse for a context.
+`--control-path` or `defaults.control_path` selects a Unix socket inside a
+user-owned mode-0700 directory. The socket is mode 0600. Processes running as
+the same local user can issue commands through it, so protect that account as
+you would an SSH ControlMaster socket. `control check` and `control exit` use
+the same target options and never read a password. `exit` waits for an active
+command and rejects commands still waiting in the queue.
+`SSL_CERT_FILE`, `SSL_CERT_DIR` and relevant x509 `GODEBUG` settings are part
+of master identity; restart the master after changing a CA file's contents
+at the same path. Explicit CA sources replace system roots for that master.
+
+One command runs at a time and up to 16 others can wait. The command timeout
+includes master startup and queue time; cleanup has a separate five-second
+budget. A connection or local reply lost after remote dispatch has an uncertain
+outcome and is never replayed automatically. If the command connection fails,
+the master tries Signal/Delete on a separate authenticated cleanup connection.
+`upload` and `download` do not use the command master in this version.
+
 ## Transfer a file
 
 ```sh
@@ -63,8 +104,9 @@ winsh download --context lab --force -- 'C:\Temp\artifact.bin' ./artifact.bin
 `upload` and `download` take exactly two literal file paths after `--` in the
 order shown above. Quote Windows paths for your local shell. Paths cannot be
 `-`; stdin and stdout are reserved for credentials and status. `-f` and
-`--codepage` apply to command execution only. A connection can come from a
-positional host, an endpoint, or the selected configuration context.
+`--codepage` and control options apply to command execution only. A connection
+can come from a positional host, an endpoint, or the selected configuration
+context.
 
 The destination parent directory must already exist. Remote paths must be
 absolute drive-rooted paths (for example, `C:\Temp\file.bin`); UNC and device

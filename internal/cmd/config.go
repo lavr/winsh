@@ -110,6 +110,22 @@ func applyConfig(o *options, host, domain *string, seen map[string]bool, d Deps)
 		o.timeout = duration
 		o.timeoutConfigured = true
 	}
+	if !seen["--control"] && selected.Defaults.ControlMaster != "" {
+		if selected.Defaults.ControlMaster != "auto" && selected.Defaults.ControlMaster != "off" {
+			return errors.New("control mode must be auto or off")
+		}
+		o.control.Mode = selected.Defaults.ControlMaster
+	}
+	if !seen["--control-persist"] && selected.Defaults.ControlPersist != "" {
+		persist, err := parseControlPersist(selected.Defaults.ControlPersist)
+		if err != nil {
+			return err
+		}
+		o.control.Persist = persist
+	}
+	if !seen["--control-path"] && selected.Defaults.ControlPath != "" {
+		o.control.Path = selected.Defaults.ControlPath
+	}
 	if !seen["--user"] && selected.Credentials.User != "" {
 		o.request.User, err = c.Resolve(selected.Credentials.User, selected.Credentials, lookup)
 		if err != nil {
@@ -120,13 +136,19 @@ func applyConfig(o *options, host, domain *string, seen map[string]bool, d Deps)
 		*domain = selected.Credentials.Domain
 	}
 	if !o.passwordStdin && !o.envExplicit && selected.Credentials.Password != "" {
-		o.passwordValue, err = c.Resolve(selected.Credentials.Password, selected.Credentials, lookup)
-		if err != nil {
-			return fmt.Errorf("configured password: %w", err)
-		}
-		o.configuredPassword = true
+		o.passwordConfig = c
+		o.passwordReference = selected.Credentials.Password
+		o.passwordCredentials = selected.Credentials
 	}
 	return nil
+}
+
+func parseControlPersist(value string) (time.Duration, error) {
+	persist, err := time.ParseDuration(value)
+	if err != nil || persist <= 0 || persist > time.Hour {
+		return 0, errors.New("control persist must be between 1ns and 1h")
+	}
+	return persist, nil
 }
 
 func runConfig(args []string, d Deps) int {
