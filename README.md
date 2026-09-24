@@ -93,7 +93,10 @@ at the same path. Explicit CA sources replace system roots for that master.
 One command runs at a time and up to 16 others can wait. The command timeout
 includes master startup and queue time; cleanup has a separate five-second
 budget. A connection or local reply lost after remote dispatch has an uncertain
-outcome and is never replayed automatically. Only `not-started` guarantees that
+outcome and is never replayed automatically. After Ctrl-C or the command
+timeout, the client waits up to seven seconds for the master's cleanup and
+adds `(remote-state-unknown)` only when Shell deletion was not confirmed;
+output arriving after cancellation is discarded. Only `not-started` guarantees that
 the command never ran; after any other control failure, including
 `unavailable`, it may have done part of its work, so do not treat the failure
 as permission to repeat it. If the command connection fails,

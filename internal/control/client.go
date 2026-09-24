@@ -9,8 +9,16 @@ import (
 	"time"
 )
 
+// cancelWait bounds how long a canceled or timed-out client waits for the
+// master's final result: the master's five-second cleanup budget plus reply
+// time.
+const cancelWait = 7 * time.Second
+
+type closeWriter interface{ CloseWrite() error }
+
 // Invoke sends one command to a local master and streams output frames to the
-// caller's writers. Closing the connection cancels only this command.
+// caller's writers. Closing the connection, or only its write side, cancels
+// only this command.
 func Invoke(ctx context.Context, socket string, call Call, stdout, stderr io.Writer) (Result, error) {
 	if err := validateCall(call); err != nil {
 		return Result{}, err
@@ -35,12 +43,25 @@ func invokeConn(ctx context.Context, conn net.Conn, call Call, stdout, stderr io
 	if stdout == nil || stderr == nil {
 		return Result{}, ErrProtocol
 	}
-	if err := conn.SetDeadline(call.Deadline); err != nil {
+	if err := conn.SetDeadline(call.Deadline.Add(cancelWait)); err != nil {
 		return Result{}, err
 	}
 	commandCtx, cancel := context.WithDeadline(ctx, call.Deadline)
 	defer cancel()
-	stop := context.AfterFunc(commandCtx, func() { _ = conn.Close() })
+	// On cancellation or deadline, half-close so the master cancels the
+	// command, then wait briefly for its cleanup result. CloseWrite fails
+	// when the master has already closed; its reply may still be buffered.
+	// A connection that cannot half-close is closed, and the outcome stays
+	// uncertain.
+	stop := context.AfterFunc(commandCtx, func() {
+		cw, ok := conn.(closeWriter)
+		if !ok {
+			_ = conn.Close()
+			return
+		}
+		_ = cw.CloseWrite()
+		_ = conn.SetDeadline(time.Now().Add(cancelWait))
+	})
 	defer stop()
 	if err := writeJSONFrame(conn, frameRequest, call); err != nil {
 		return Result{}, uncertainCommandError(commandCtx, call.Deadline, err)
@@ -52,6 +73,11 @@ func invokeConn(ctx context.Context, conn net.Conn, call Call, stdout, stderr io
 		}
 		switch kind {
 		case frameStdout, frameStderr:
+			if commandCtx.Err() != nil {
+				// Output after cancellation is dropped while waiting for
+				// the cleanup result.
+				continue
+			}
 			writer := stdout
 			if kind == frameStderr {
 				writer = stderr

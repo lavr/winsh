@@ -13,6 +13,10 @@ import (
 	"github.com/lavr/winsh/internal/remote"
 )
 
+// resultWriteTimeout bounds the final result write, which may follow the
+// command deadline by the cleanup budget.
+const resultWriteTimeout = 2 * time.Second
+
 type commandExecutor func(context.Context, Call, io.Writer, io.Writer) (int, error)
 
 type commandJob struct {
@@ -207,7 +211,11 @@ func (s *masterServer) handle(conn net.Conn) {
 		go func() {
 			var b [1]byte
 			_, _ = conn.Read(b[:])
-			cancel()
+			// A client half-closes at its deadline too; let the job's own
+			// deadline report timeout rather than cancellation.
+			if time.Now().Before(call.Deadline) {
+				cancel()
+			}
 		}()
 		if category := s.enqueue(job); category != "" {
 			_ = writeFrame(conn, frameError, []byte(category))
@@ -215,10 +223,15 @@ func (s *masterServer) handle(conn net.Conn) {
 		}
 		select {
 		case <-job.done:
-			_ = writeJSONFrame(conn, frameResult, job.result)
 		case <-jobCtx.Done():
+			// A queued job is answered at once. An active job finishes
+			// its bounded cleanup first, so a client waiting after
+			// cancellation learns whether the remote Shell was deleted.
 			s.cancelQueued(job)
+			<-job.done
 		}
+		_ = conn.SetDeadline(time.Now().Add(resultWriteTimeout))
+		_ = writeJSONFrame(conn, frameResult, job.result)
 	default:
 		_ = writeFrame(conn, frameError, []byte(CategoryNotStarted))
 	}

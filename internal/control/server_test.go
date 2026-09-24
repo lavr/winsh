@@ -184,9 +184,9 @@ func TestMasterDispatchQueueDeadlineDoesNotCancelActive(t *testing.T) {
 		first <- err
 	}()
 	<-started
-	_, err := Invoke(ctx, path, testCall(time.Now().Add(50*time.Millisecond)), io.Discard, io.Discard)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("queued deadline = %v", err)
+	result, err := Invoke(ctx, path, testCall(time.Now().Add(50*time.Millisecond)), io.Discard, io.Discard)
+	if err != nil || result.Category != CategoryTimeout {
+		t.Fatalf("queued deadline = %+v, %v", result, err)
 	}
 	waitQueue(t, server, 0)
 	if executed.Load() != 1 {
@@ -388,5 +388,51 @@ func TestCategoryFromNotStarted(t *testing.T) {
 	}
 	if got := categoryFromError(errors.Join(err, remote.ErrRemoteStateUnknown)); got != CategoryRemoteStateUnknown {
 		t.Fatalf("unknown state lost priority: %q", got)
+	}
+}
+
+func TestMasterCancelReportsCleanupResult(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		outcome func(error) error
+		want    string
+	}{
+		{"deleted", func(err error) error { return err }, CategoryCanceled},
+		{"unknown", func(err error) error { return errors.Join(err, remote.ErrRemoteStateUnknown) }, CategoryRemoteStateUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started := make(chan struct{})
+			_, path := dispatchFixture(t, func(ctx context.Context, _ Call, stdout, _ io.Writer) (int, error) {
+				close(started)
+				<-ctx.Done()
+				// Output during cleanup must not reach a canceled client.
+				_, _ = io.WriteString(stdout, "late")
+				time.Sleep(100 * time.Millisecond)
+				return 0, tc.outcome(ctx.Err())
+			})
+			ctx, cancel := context.WithCancel(t.Context())
+			go func() { <-started; cancel() }()
+			var out strings.Builder
+			begin := time.Now()
+			result, err := Invoke(ctx, path, testCall(time.Now().Add(3*time.Second)), &out, io.Discard)
+			if err != nil || result.Category != tc.want || out.Len() != 0 {
+				t.Fatalf("canceled command = %+v, %v, output %q", result, err, out.String())
+			}
+			if time.Since(begin) < 100*time.Millisecond {
+				t.Fatal("client did not wait for cleanup")
+			}
+		})
+	}
+}
+
+func TestMasterDeadlineReportsCleanupResult(t *testing.T) {
+	_, path := dispatchFixture(t, func(ctx context.Context, _ Call, _, _ io.Writer) (int, error) {
+		<-ctx.Done()
+		time.Sleep(100 * time.Millisecond)
+		return 0, ctx.Err()
+	})
+	result, err := Invoke(t.Context(), path, testCall(time.Now().Add(50*time.Millisecond)), io.Discard, io.Discard)
+	if err != nil || result.Category != CategoryTimeout {
+		t.Fatalf("timed-out command = %+v, %v", result, err)
 	}
 }
