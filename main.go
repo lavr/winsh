@@ -7,6 +7,7 @@ import (
 	"os/signal"
 
 	"github.com/lavr/winsh/internal/cmd"
+	"github.com/lavr/winsh/internal/control"
 	"github.com/lavr/winsh/internal/remote"
 )
 
@@ -14,6 +15,14 @@ var version = "dev"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	if len(os.Args) == 2 && os.Args[1] == "__control-master" {
+		err := control.Serve(ctx, 3)
+		stop()
+		if err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	code := runCLI(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)

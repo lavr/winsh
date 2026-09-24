@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -51,9 +50,6 @@ func TestCancelDuringPasswordRead(t *testing.T) {
 }
 
 func TestProcessInterruptPassword(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("os.Process.Signal does not support Interrupt on Windows")
-	}
 	if os.Getenv("WINSH_TEST_SIGNAL_CHILD") == "1" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		fmt.Println("ready")

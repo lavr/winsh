@@ -2,10 +2,13 @@
 
 `main.go` supplies process streams and cancellation to `internal/cmd`.
 The CLI validates command boundaries, source selection and flags before loading
-a password through `internal/secret`. `run` and `ps` call `remote.Run`;
+a password through `internal/secret`. Standalone `run` and `ps` call
+`remote.Run`; control mode routes them through `internal/control`.
 `upload` and `download` call `remote.Transfer`. Each invocation has one overall
-deadline. The transfer commands reuse connection and credential precedence,
-then require two literal paths after `--`.
+deadline. Password references are resolved only for standalone execution or
+when a new control master must authenticate; a reused master and the control
+check/exit commands do not read the password. Transfer commands use the same
+CLI target and credential precedence, then require two literal paths after `--`.
 
 The client runs on Linux and macOS. Local upload source checks and download
 stage commits use Unix file operations; Windows path rules still apply to the
@@ -23,17 +26,21 @@ The wrapper owns HTTP rather than using the library's default transport:
 - The anonymous discovery connection may close after HTTP 401. Type-1 begins
   on a fresh connection; the following authentication and SOAP exchange must
   stay on that connection.
-- Every SOAP exchange establishes an NTLM session on one TCP connection, with
-  fresh session keys. A failed SOAP exchange is never replayed. Transient
-  failures during empty-body NTLM negotiation can be retried at most twice on
-  a fresh connection, before SOAP is dispatched. Separate connections cost
-  extra round trips but avoid unsafe reuse of NTLM sequence state.
+- Standalone commands and transfers establish a fresh NTLM session for every
+  SOAP exchange. Control mode authenticates one pinned command connection and
+  one pinned cleanup connection before it becomes ready. Each serial exchange
+  advances the same connection's NTLM signing and sealing sequence. A failed
+  SOAP exchange is never replayed. Transient failures during empty-body NTLM
+  negotiation can be retried at most twice on a fresh connection, before SOAP
+  is dispatched.
 - Authentication accepts NTLM or Negotiate HTTP scheme with an NTLMv2 token.
   It does not implement Kerberos/SPNEGO token negotiation.
 - HTTP requires 128-bit NTLM signing/sealing and Extended Session Security.
   The response's signature and original length are checked; malformed framing,
   anonymous NTLM and plaintext downgrade are rejected.
-- HTTPS uses verified TLS 1.2 or newer. Custom CA trust comes from the system.
+- HTTPS uses verified TLS 1.2 or newer. Without explicit CA settings, roots
+  come from the OS. Setting `SSL_CERT_FILE` or `SSL_CERT_DIR` uses those
+  configured roots instead.
   TLS channel binding is not implemented yet.
 - HTTP proxies and redirects are disabled. Wire dumps are never logged.
 - Response bodies are limited to 4 MiB; malformed NTLM AV fields are rejected
@@ -45,6 +52,23 @@ helper polls Receive in a background goroutine; transfer can send file chunks
 while polling continues. WSMan OperationTimeout faults during receive mean
 "no output yet"; the overall context still bounds the loop. Shell deletion
 uses an independent five-second cleanup context, including after cancellation.
+
+Control mode uses a separate local master process. A private inherited pipe
+passes the initial password to that child; neither argv, its environment nor
+the public Unix socket carries a password field. The child authenticates both
+NTLM connections, then drops password-bearing request data. It listens on a
+mode-0600 Unix socket inside a user-owned mode-0700 directory and holds a
+per-path lock across its lifetime. The socket identity includes endpoint,
+account, TLS target and effective CA/x509 settings. A connected client sends
+versioned frames bounded to 64 KiB; stdout and stderr are separate streams.
+One command executes at a time, with 16 waiting clients. An absolute deadline
+covers bootstrap, queue and execution; a separate five-second budget covers
+Signal Terminate and Shell Delete. Each command has a distinct remote Shell
+and Command ID. A broken command connection ends the master after cleanup,
+and a lost post-dispatch reply is reported as an uncertain remote state rather
+than retried. The cleanup connection remains available after command-lane
+failure or caller cancellation. Idle masters exit after the configured positive
+duration; `control exit` stops admission and waits for active work.
 
 `remote.Transfer` streams one regular file through WinRM. Upload sends bounded
 Base64 lines to a PowerShell receiver and compares byte count and SHA-256 with

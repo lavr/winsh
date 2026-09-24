@@ -50,6 +50,15 @@ func run(ctx context.Context, r Request, stdout, stderr io.Writer, p poster) (co
 		return 0, err
 	}
 
+	stdout, stderr = decodeWriters(r, stdout, stderr)
+	rc, err := s.receive(ctx, stdout, stderr)
+	if err != nil {
+		return 0, err
+	}
+	return rc, nil
+}
+
+func decodeWriters(r Request, stdout, stderr io.Writer) (io.Writer, io.Writer) {
 	if !r.PowerShell {
 		switch r.Codepage {
 		case "866":
@@ -62,10 +71,5 @@ func run(ctx context.Context, r Request, stdout, stderr io.Writer, p poster) (co
 			stderr = transform.NewWriter(stderr, dec)
 		}
 	}
-
-	rc, err := s.receive(ctx, stdout, stderr)
-	if err != nil {
-		return 0, err
-	}
-	return rc, nil
+	return stdout, stderr
 }

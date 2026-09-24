@@ -2,8 +2,10 @@
 
 - **Current development:** run, ps, upload, download, NTLM, password env/stdin,
   endpoint/tunnel support, static binaries, explicit codepage decoding,
-  bounded execution and cleanup. File transfer was implemented ahead of its
-  original v0.3 target; its release version is not assigned yet.
+  bounded execution and cleanup, and opt-in command connection reuse on
+  Linux/macOS. File transfer was implemented ahead of its original v0.3
+  target; its release version is not assigned yet. Transfer connection reuse
+  remains separate work.
 
 Future ideas, without assigned release versions:
 

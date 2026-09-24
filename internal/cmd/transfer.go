@@ -43,7 +43,7 @@ func parseTransfer(args []string, d Deps) (options, remote.TransferRequest, erro
 	before = append(before, "ps")
 	for i := 1; i < separator; i++ {
 		name, _, _ := strings.Cut(args[i], "=")
-		if name == "-f" || name == "--codepage" {
+		if name == "-f" || name == "--codepage" || name == "--control" || name == "--control-persist" || name == "--control-path" {
 			return options{}, req, errors.New("option does not apply to file transfer")
 		}
 		if name == "--force" {
