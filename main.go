@@ -24,5 +24,5 @@ func runCLI(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 	// can return even on systems where closing a file cannot wake a blocked read.
 	stopInput := context.AfterFunc(ctx, func() { _ = stdin.Close() })
 	defer stopInput()
-	return cmd.Run(ctx, args, cmd.Deps{Stdin: stdin, Stdout: stdout, Stderr: stderr, Getenv: os.Getenv, LookupEnv: os.LookupEnv, Execute: remote.Run, Version: version})
+	return cmd.Run(ctx, args, cmd.Deps{Stdin: stdin, Stdout: stdout, Stderr: stderr, Getenv: os.Getenv, LookupEnv: os.LookupEnv, Execute: remote.Run, Transfer: remote.Transfer, Version: version})
 }

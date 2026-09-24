@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/bodgit/ntlmssp"
@@ -21,10 +22,42 @@ type transport struct{ request Request }
 
 func newTransport(r Request) *transport { return &transport{request: r} }
 
+// handshakeTransportError is limited to empty-body NTLM exchanges. A SOAP
+// request has not been dispatched, so retrying from a fresh authentication
+// connection cannot replay a remote command or a transfer chunk.
+type handshakeTransportError struct {
+	phase string
+	cause error
+}
+
+func (e *handshakeTransportError) Error() string { return e.phase + ": " + e.cause.Error() }
+func (e *handshakeTransportError) Unwrap() error { return e.cause }
+
+func retryableHandshake(err error) bool {
+	var networkErr net.Error
+	return errors.As(err, &networkErr) && networkErr.Timeout() ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET)
+}
+
+func withHandshakeRetries(ctx context.Context, attempt func() (string, error)) (string, error) {
+	for i := 0; ; i++ {
+		body, err := attempt()
+		var handshakeErr *handshakeTransportError
+		if err == nil || ctx.Err() != nil || !errors.As(err, &handshakeErr) ||
+			!retryableHandshake(handshakeErr.cause) || i >= 2 {
+			return body, err
+		}
+	}
+}
+
+func (t *transport) post(ctx context.Context, message string) (string, error) {
+	return withHandshakeRetries(ctx, func() (string, error) { return t.postOnce(ctx, message) })
+}
+
 // Each SOAP exchange has its own authenticated TCP connection. This prevents
 // receive polling and cancellation from sharing NTLM sequence numbers, and
 // avoids replaying a sealed message after a connection has been replaced.
-func (t *transport) post(ctx context.Context, message string) (string, error) {
+func (t *transport) postOnce(ctx context.Context, message string) (string, error) {
 	user, domain := splitUser(t.request.User)
 	ntlm, err := ntlmssp.NewClient(ntlmssp.SetUserInfo(user, t.request.Password), ntlmssp.SetDomain(domain), ntlmssp.SetVersion(ntlmssp.DefaultVersion()))
 	if err != nil {
@@ -73,7 +106,7 @@ func (t *transport) post(ctx context.Context, message string) (string, error) {
 	const soapType = "application/soap+xml;charset=UTF-8"
 	status, headers, _, err := send("", nil, soapType)
 	if err != nil {
-		return "", err
+		return "", &handshakeTransportError{phase: "NTLM discovery", cause: err}
 	}
 	if status != 401 {
 		return "", fmt.Errorf("expected NTLM authentication challenge, got HTTP %d", status)
@@ -93,7 +126,7 @@ func (t *transport) post(ctx context.Context, message string) (string, error) {
 	}
 	status, headers, _, err = send(scheme+" "+base64.StdEncoding.EncodeToString(token), nil, soapType)
 	if err != nil {
-		return "", err
+		return "", &handshakeTransportError{phase: "NTLM negotiation", cause: err}
 	}
 	if status != 401 {
 		return "", fmt.Errorf("expected NTLM type-2 challenge, got HTTP %d", status)
@@ -113,7 +146,7 @@ func (t *transport) post(ctx context.Context, message string) (string, error) {
 	auth := scheme + " " + base64.StdEncoding.EncodeToString(token)
 	status, _, _, err = send(auth, nil, soapType)
 	if err != nil {
-		return "", err
+		return "", &handshakeTransportError{phase: "NTLM authentication", cause: err}
 	}
 	// WSMan can return 400 for the empty authenticated handshake request.
 	if status != 200 && status != 400 {
@@ -132,7 +165,7 @@ func (t *transport) post(ctx context.Context, message string) (string, error) {
 	}
 	status, headers, data, err := send("", payload, ct)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("WinRM SOAP exchange: %w", err)
 	}
 	if status != 200 && status != 500 {
 		return "", fmt.Errorf("WinRM request failed: HTTP %d", status)

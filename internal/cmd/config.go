@@ -108,6 +108,7 @@ func applyConfig(o *options, host, domain *string, seen map[string]bool, d Deps)
 			return errors.New("timeout must be a positive duration")
 		}
 		o.timeout = duration
+		o.timeoutConfigured = true
 	}
 	if !seen["--user"] && selected.Credentials.User != "" {
 		o.request.User, err = c.Resolve(selected.Credentials.User, selected.Credentials, lookup)

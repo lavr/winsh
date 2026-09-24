@@ -2,8 +2,10 @@
 
 `main.go` supplies process streams and cancellation to `internal/cmd`.
 The CLI validates command boundaries, source selection and flags before loading
-a password through `internal/secret`. A `remote.Request` is executed with a
-single overall deadline. CLI tests replace only the remote execution boundary.
+a password through `internal/secret`. `run` and `ps` call `remote.Run`;
+`upload` and `download` call `remote.Transfer`. Each invocation has one overall
+deadline. The transfer commands reuse connection and credential precedence,
+then require two literal paths after `--`.
 
 `internal/remote` uses the go-winrm fork's SOAP request builders and PowerShell
 encoding. The module is replaced using its declared historical name,
@@ -17,9 +19,11 @@ The wrapper owns HTTP rather than using the library's default transport:
 - The anonymous discovery connection may close after HTTP 401. Type-1 begins
   on a fresh connection; the following authentication and SOAP exchange must
   stay on that connection.
-- Every exchange establishes an NTLM session on one TCP connection, with fresh
-  session keys. Replacing the connection or replaying a request is forbidden.
-  This costs extra round trips but avoids unsafe reuse of NTLM sequence state.
+- Every SOAP exchange establishes an NTLM session on one TCP connection, with
+  fresh session keys. A failed SOAP exchange is never replayed. Transient
+  failures during empty-body NTLM negotiation can be retried at most twice on
+  a fresh connection, before SOAP is dispatched. Separate connections cost
+  extra round trips but avoid unsafe reuse of NTLM sequence state.
 - Authentication accepts NTLM or Negotiate HTTP scheme with an NTLMv2 token.
   It does not implement Kerberos/SPNEGO token negotiation.
 - HTTP requires 128-bit NTLM signing/sealing and Extended Session Security.
@@ -31,10 +35,21 @@ The wrapper owns HTTP rather than using the library's default transport:
 - Response bodies are limited to 4 MiB; malformed NTLM AV fields are rejected
   before being passed to the authentication library.
 
-Execution is sequential: create shell, execute, send stdin EOF, receive until
-finished, delete shell. WSMan OperationTimeout faults during receive mean
-"no output yet"; the overall context still bounds the loop. Delete uses an
-independent five-second context, including when execution was canceled.
+For `run` and `ps`, execution opens a shell, starts the command, sends stdin
+EOF, receives until completion, then deletes the shell. The shared session
+helper polls Receive in a background goroutine; transfer can send file chunks
+while polling continues. WSMan OperationTimeout faults during receive mean
+"no output yet"; the overall context still bounds the loop. Shell deletion
+uses an independent five-second cleanup context, including after cancellation.
+
+`remote.Transfer` streams one regular file through WinRM. Upload sends bounded
+Base64 lines to a PowerShell receiver and compares byte count and SHA-256 with
+the receiver's control record before committing a stage in the destination
+directory. Download decodes the sender's output into a local stage, verifies
+the count and hash, then commits the stage. The default refuses an existing
+destination; `--force` permits replacement. A lost finalization response is
+reported as an unknown outcome, so the client does not replay a possibly
+completed commit. Cleanup is bounded and reports known leftover artifacts.
 
 Responses use a small namespace-aware encoding/xml parser. It validates output
 base64 and exit codes and propagates local write failures. This avoids the
