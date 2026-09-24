@@ -28,6 +28,9 @@ type uploadFake struct {
 	receiverStderr string
 	receiverRC     int
 	receiverErr    error
+	// receiverEarly makes the receiver finish before end of input.
+	receiverEarly bool
+	receiverEOF   bool
 
 	finalizerStdout string
 	finalizerStderr string
@@ -91,6 +94,9 @@ func (f *uploadFake) post(_ context.Context, body string) (string, error) {
 				f.opens)), nil
 	case strings.Contains(body, shellURI+"Send"):
 		f.sends++
+		if f.opens == 1 && strings.Contains(body, `End="true"`) {
+			f.receiverEOF = true
+		}
 		return envelope(shellURI+"SendResponse", ""), nil
 	case strings.Contains(body, shellURI+"Receive"):
 		f.receives++
@@ -104,6 +110,11 @@ func (f *uploadFake) post(_ context.Context, body string) (string, error) {
 		}
 		if rerr != nil {
 			return "", rerr
+		}
+		if f.opens == 1 && !f.receiverEOF && !f.receiverEarly {
+			// Like the real receiver, run until end of input.
+			time.Sleep(time.Millisecond)
+			return envelope(shellURI+"ReceiveResponse", `<rsp:ReceiveResponse><rsp:CommandState State="`+shellURI+`CommandState/Running"/></rsp:ReceiveResponse>`), nil
 		}
 		stdout = strings.ReplaceAll(stdout, "placeholder", f.transferID)
 		if f.opens > 1 && stdout == "OK: committed" {

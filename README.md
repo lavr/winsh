@@ -121,7 +121,9 @@ The destination parent directory must already exist. Remote paths must be
 absolute drive-rooted paths (for example, `C:\Temp\file.bin`); UNC and device
 paths, alternate data streams and wildcards are not supported. Files are streamed
 through WinRM, checked by byte count and SHA-256, and committed through a
-temporary file in the destination directory. The default refuses an existing
+temporary file in the destination directory. Data travels over two NTLM
+connections, one for input and one for output, each authenticated once per
+transfer; if either closes, the transfer fails rather than resending data. The default refuses an existing
 destination; `--force` allows replacement. Retry without `--force` first when
 the final commit outcome is unknown. Inspect the destination and its checksum
 before deciding whether to overwrite. Transfer does not resume an interrupted

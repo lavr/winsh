@@ -35,6 +35,11 @@ type session struct {
 	params    *winrm.Parameters
 	p         poster
 	cleanup   poster
+	// sendLane and recvLane carry SendInput and Receive. They default to p;
+	// transfers pass separate persistent connections so a blocking Receive
+	// never holds up a Send on the same HTTP/1.1 connection.
+	sendLane poster
+	recvLane poster
 
 	// Output destinations are set once by receive(); the receive loop
 	// blocks on outReady until they are populated.
@@ -68,6 +73,13 @@ func startSession(ctx context.Context, r Request, p poster) (*session, error) {
 }
 
 func startSessionWithCleanup(ctx context.Context, r Request, p, cleanup poster) (*session, error) {
+	return startSessionLanes(ctx, r, p, cleanup, p, p)
+}
+
+// startSessionLanes opens the shell and command through p, then uses send
+// and receive for the data exchanges. Signal and Delete stay on p and
+// cleanup, independent of the data lanes.
+func startSessionLanes(ctx context.Context, r Request, p, cleanup, send, receive poster) (*session, error) {
 	command, err := Command(r.Command, r.PowerShell)
 	if err != nil {
 		return nil, err
@@ -80,6 +92,8 @@ func startSessionWithCleanup(ctx context.Context, r Request, p, cleanup poster) 
 		params:        params,
 		p:             p,
 		cleanup:       cleanup,
+		sendLane:      send,
+		recvLane:      receive,
 		outReady:      make(chan struct{}),
 		recvDone:      make(chan struct{}),
 		lifecycleDone: make(chan struct{}),
@@ -179,7 +193,7 @@ func (s *session) send(ctx context.Context, data []byte, eof bool) error {
 
 	msg := winrm.NewSendInputRequest(s.endpoint, s.shellID, s.commandID, data, eof, s.params)
 	defer msg.Free()
-	reply, err := s.p.post(combined, msg.String())
+	reply, err := s.sendLane.post(combined, msg.String())
 	if err != nil {
 		return err
 	}
@@ -363,7 +377,7 @@ func (s *session) receiveLoop(ctx context.Context) {
 			return
 		}
 		msg := winrm.NewGetOutputRequest(s.endpoint, s.shellID, s.commandID, "stdout stderr", s.params)
-		reply, err := s.p.post(ctx, msg.String())
+		reply, err := s.recvLane.post(ctx, msg.String())
 		msg.Free()
 		if errors.Is(err, errOperationTimeout) {
 			continue
