@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -461,5 +462,66 @@ func TestPersistentPosterLostResponseIsNotUnsent(t *testing.T) {
 	defer p.Close()
 	if _, err := p.Post(t.Context(), "<soap/>"); err == nil || errors.Is(err, errUnsent) {
 		t.Fatalf("lost response classified as unsent: %v", err)
+	}
+}
+
+// TestPersistentPosterPinnedTLS covers a lane over verified HTTPS: several
+// exchanges reuse one TLS connection, an untrusted CA is refused, and a
+// server close after an acknowledged exchange ends the lane without redial.
+func TestPersistentPosterPinnedTLS(t *testing.T) {
+	const soap = `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body/></s:Envelope>`
+	var requests atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != soap {
+			t.Errorf("unexpected HTTPS body: %q", body)
+		}
+		if requests.Add(1) == 3 {
+			w.Header().Set("Connection", "close")
+		}
+		w.Header().Set("Content-Type", "application/soap+xml;charset=UTF-8")
+		_, _ = io.WriteString(w, soap)
+	}))
+	var handshakes atomic.Int32
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			handshakes.Add(1)
+		}
+	}
+	server.StartTLS()
+	defer server.Close()
+	lane := func(roots *x509.CertPool) *persistentPoster {
+		rt, _ := pinnedHTTPTransport("")
+		rt.TLSClientConfig.RootCAs = roots
+		return &persistentPoster{endpoint: server.URL, client: &http.Client{Transport: rt}, transport: rt, lastUsed: time.Now()}
+	}
+
+	untrusted := x509.NewCertPool()
+	cert, err := x509.ParseCertificate(unrelatedTestCertificate(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	untrusted.AddCert(cert)
+	bad := lane(untrusted)
+	if _, err := bad.Post(t.Context(), soap); err == nil || requests.Load() != 0 {
+		t.Fatalf("untrusted CA accepted: err=%v requests=%d", err, requests.Load())
+	}
+	bad.Close()
+
+	trusted := x509.NewCertPool()
+	trusted.AddCert(server.Certificate())
+	p := lane(trusted)
+	defer p.Close()
+	before := handshakes.Load()
+	for i := 0; i < 3; i++ {
+		if got, err := p.Post(t.Context(), soap); err != nil || got != soap {
+			t.Fatalf("HTTPS exchange %d = %q, %v", i, got, err)
+		}
+	}
+	if handshakes.Load()-before != 1 {
+		t.Fatalf("lane opened %d TLS connections", handshakes.Load()-before)
+	}
+	if _, err := p.Post(t.Context(), soap); !errors.Is(err, errUnsent) || requests.Load() != 3 {
+		t.Fatalf("closed TLS lane redialed: err=%v requests=%d", err, requests.Load())
 	}
 }

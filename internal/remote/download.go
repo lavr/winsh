@@ -35,7 +35,11 @@ func (w *transferProgressWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func download(ctx context.Context, req TransferRequest, progress func(int64), p poster) (result TransferResult, runErr error) {
+func download(ctx context.Context, req TransferRequest, progress func(int64), p poster) (TransferResult, error) {
+	return downloadLanes(ctx, req, progress, p, sharedLanes(p))
+}
+
+func downloadLanes(ctx context.Context, req TransferRequest, progress func(int64), p poster, lanes dataLanes) (result TransferResult, runErr error) {
 	if req.Direction != Download {
 		return result, &TransferInputError{Message: "invalid transfer direction"}
 	}
@@ -89,7 +93,13 @@ func download(ctx context.Context, req TransferRequest, progress func(int64), p 
 	if err != nil {
 		return result, err
 	}
-	s, err := startSession(ctx, Request{Endpoint: req.Connection.Endpoint, TargetHost: req.Connection.TargetHost, User: req.Connection.User, Password: req.Connection.Password, Command: script, PowerShell: true}, p)
+	sendLane, recvLane, closeLanes, err := lanes(ctx)
+	if err != nil {
+		return result, fmt.Errorf("authenticate data connections: %w", err)
+	}
+	// Deferred first, so it runs after the sender session is closed.
+	defer closeLanes()
+	s, err := startSessionLanes(ctx, Request{Endpoint: req.Connection.Endpoint, TargetHost: req.Connection.TargetHost, User: req.Connection.User, Password: req.Connection.Password, Command: script, PowerShell: true}, p, p, sendLane, recvLane)
 	if err != nil {
 		return result, fmt.Errorf("start sender: %w", err)
 	}

@@ -8,6 +8,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,7 +29,12 @@ shell_uri = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/"
 transfer_uri = "http://schemas.xmlsoap.org/ws/2004/09/transfer/"
 addressing_uri = "http://schemas.xmlsoap.org/ws/2004/08/addressing"
 soap_uri = "http://www.w3.org/2003/05/soap-envelope"
+wsman_fault_uri = "http://schemas.microsoft.com/wbem/wsman/1/wsmanfault"
 next_shell = 0
+# Shells are global: data lanes send and receive on connections other than
+# the one that created the shell. Each entry holds the command ID, whether
+# stdin reached EOF and the stdin bytes echoed back on completion.
+shells = {}
 
 
 def soap_response(action, body):
@@ -101,26 +107,58 @@ class Handler(BaseHTTPRequestHandler):
             global next_shell
             with lock:
                 next_shell += 1
-                self.shell_id = f"shell-{next_shell}"
-            response = soap_response(transfer_uri + "CreateResponse", f'<rsp:Shell><rsp:ShellId>{self.shell_id}</rsp:ShellId></rsp:Shell>')
+                shell_id = f"shell-{next_shell}"
+                shells[shell_id] = {"command": None, "eof": False, "stdin": bytearray()}
+            response = soap_response(transfer_uri + "CreateResponse", f'<rsp:Shell><rsp:ShellId>{shell_id}</rsp:ShellId></rsp:Shell>')
         elif action == shell_uri + "Command":
-            assert self.shell_id.encode() in plain
-            self.command_id = f"command-{self.shell_id[6:]}"
-            response = soap_response(shell_uri + "CommandResponse", f'<rsp:CommandResponse><rsp:CommandId>{self.command_id}</rsp:CommandId></rsp:CommandResponse>')
+            shell_id = self.shell(plain)
+            with lock:
+                shells[shell_id]["command"] = f"command-{shell_id[6:]}"
+            response = soap_response(shell_uri + "CommandResponse", f'<rsp:CommandResponse><rsp:CommandId>command-{shell_id[6:]}</rsp:CommandId></rsp:CommandResponse>')
         elif action in (shell_uri + "Send", shell_uri + "Receive", shell_uri + "Signal"):
-            assert self.shell_id.encode() in plain
-            assert self.command_id.encode() in plain
-            if action == shell_uri + "Receive":
-                response = soap_response(shell_uri + "ReceiveResponse", f'<rsp:ReceiveResponse><rsp:Stream Name="stdout">b2sK</rsp:Stream><rsp:Stream Name="stderr">ZXJyCg==</rsp:Stream><rsp:CommandState State="{shell_uri}CommandState/Done"><rsp:ExitCode>7</rsp:ExitCode></rsp:CommandState></rsp:ReceiveResponse>')
+            shell_id = self.shell(plain)
+            with lock:
+                shell = shells[shell_id]
+            assert shell["command"] and shell["command"].encode() in plain
+            if action == shell_uri + "Send":
+                stream = root.find(f".//{{{shell_uri[:-1]}}}Stream")
+                with lock:
+                    assert not shell["eof"], "Send after EOF"
+                    shell["stdin"] += base64.b64decode(stream.text or "")
+                    shell["eof"] = stream.get("End") == "true"
+                response = soap_response(action + "Response", "")
+            elif action == shell_uri + "Receive":
+                with lock:
+                    eof, stdin = shell["eof"], bytes(shell["stdin"])
+                if not eof:
+                    # Like WinRM, a Receive without output ends in an
+                    # OperationTimeout fault sealed inside HTTP 500.
+                    time.sleep(0.02)
+                    self.sealed_reply(500, (f'<s:Envelope xmlns:s="{soap_uri}" xmlns:a="{addressing_uri}"><s:Header><a:Action>fault</a:Action></s:Header>'
+                                            f'<s:Body><s:Fault><s:Detail><f:WSManFault xmlns:f="{wsman_fault_uri}" Code="2150858793"/></s:Detail></s:Fault></s:Body></s:Envelope>').encode())
+                    return
+                stdout = base64.b64encode(stdin or b"ok\n").decode()
+                response = soap_response(shell_uri + "ReceiveResponse", f'<rsp:ReceiveResponse><rsp:Stream Name="stdout">{stdout}</rsp:Stream><rsp:Stream Name="stderr">ZXJyCg==</rsp:Stream><rsp:CommandState State="{shell_uri}CommandState/Done"><rsp:ExitCode>7</rsp:ExitCode></rsp:CommandState></rsp:ReceiveResponse>')
             else:
                 response = soap_response(action + "Response", "")
         elif action == transfer_uri + "Delete":
-            assert self.shell_id.encode() in plain
+            shell_id = self.shell(plain)
+            with lock:
+                del shells[shell_id]
             response = soap_response(transfer_uri + "DeleteResponse", "")
-            del self.shell_id
-            del self.command_id
         else:
             raise AssertionError(f"unexpected SOAP action: {action}")
+        self.sealed_reply(200, response)
+
+    def shell(self, plain):
+        match = re.search(rb"shell-\d+", plain)
+        assert match, "request names no shell"
+        shell_id = match[0].decode()
+        with lock:
+            assert shell_id in shells, f"unknown {shell_id}"
+        return shell_id
+
+    def sealed_reply(self, code, response):
         sealed = self.ntlm.wrap_winrm(response)
         frame = (
             marker
@@ -133,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
             + sealed.data
             + b"--Encrypted Boundary--\r\n"
         )
-        self.reply(200, frame, 'multipart/encrypted;protocol="application/HTTP-SPNEGO-session-encrypted";boundary="Encrypted Boundary"')
+        self.reply(code, frame, 'multipart/encrypted;protocol="application/HTTP-SPNEGO-session-encrypted";boundary="Encrypted Boundary"')
 
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)

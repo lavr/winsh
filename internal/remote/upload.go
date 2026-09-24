@@ -38,7 +38,11 @@ const uploadChunkRaw = 32 * 1024
 // return *FinalizationUnknownError so the caller knows the destination
 // may contain either the previous file or the new one. errors.Is keeps
 // working because Cause is preserved on the wrapper.
-func upload(ctx context.Context, req TransferRequest, progress func(int64), p poster) (result TransferResult, runErr error) {
+func upload(ctx context.Context, req TransferRequest, progress func(int64), p poster) (TransferResult, error) {
+	return uploadLanes(ctx, req, progress, p, sharedLanes(p))
+}
+
+func uploadLanes(ctx context.Context, req TransferRequest, progress func(int64), p poster, lanes dataLanes) (result TransferResult, runErr error) {
 	if req.Direction != Upload {
 		return TransferResult{}, fmt.Errorf("upload: wrong direction %q", req.Direction)
 	}
@@ -77,14 +81,20 @@ func upload(ctx context.Context, req TransferRequest, progress func(int64), p po
 		return TransferResult{}, fmt.Errorf("build receiver script: %w", err)
 	}
 
-	sess, err := startSession(ctx, Request{
+	sendLane, recvLane, closeLanes, err := lanes(ctx)
+	if err != nil {
+		return TransferResult{}, fmt.Errorf("authenticate data connections: %w", err)
+	}
+	// Deferred first, so it runs after the receiver session is closed.
+	defer closeLanes()
+	sess, err := startSessionLanes(ctx, Request{
 		Endpoint:   req.Connection.Endpoint,
 		TargetHost: req.Connection.TargetHost,
 		User:       req.Connection.User,
 		Password:   req.Connection.Password,
 		Command:    receiverCmd,
 		PowerShell: true,
-	}, p)
+	}, p, p, sendLane, recvLane)
 	if err != nil {
 		return TransferResult{}, fmt.Errorf("start receiver: %w", err)
 	}
@@ -134,11 +144,27 @@ func upload(ctx context.Context, req TransferRequest, progress func(int64), p po
 	// to avoid deadlock or timeout. The session owns and cancels this
 	// worker on every return path.
 	stdout, stderr := boundedOutput{limit: transferRecordMaxSize}, boundedOutput{limit: 1024}
+	// The receiver exits only after EOF. If it exits earlier, stop
+	// streaming: cancel an in-flight Send and send nothing more.
+	streamCtx, stopStream := context.WithCancel(ctx)
+	defer stopStream()
 	received := make(chan receiveResult, 1)
 	go func() {
 		rc, err := sess.receive(ctx, &stdout, &stderr)
 		received <- receiveResult{code: rc, err: err}
+		stopStream()
 	}()
+	earlyExit := func(sendErr error) error {
+		if ctx.Err() != nil || streamCtx.Err() == nil {
+			return sendErr
+		}
+		recv := <-received
+		received <- recv
+		if recv.err != nil {
+			return fmt.Errorf("receiver stopped before end of input: %w", recv.err)
+		}
+		return fmt.Errorf("receiver exited before end of input with code %d", recv.code)
+	}
 
 	sha := sha256.New()
 	totalSent := int64(0)
@@ -146,13 +172,16 @@ func upload(ctx context.Context, req TransferRequest, progress func(int64), p po
 	encoded := make([]byte, base64.StdEncoding.EncodedLen(chunkLimit)+2)
 
 	for {
+		if err := streamCtx.Err(); err != nil {
+			return TransferResult{}, fmt.Errorf("send chunk: %w", earlyExit(err))
+		}
 		n, rerr := src.Read(chunk)
 		if n > 0 {
 			sha.Write(chunk[:n])
 			base64.StdEncoding.Encode(encoded, chunk[:n])
 			line := append(encoded[:base64.StdEncoding.EncodedLen(n)], '\r', '\n')
-			if err := sess.send(ctx, line, false); err != nil {
-				return TransferResult{}, fmt.Errorf("send chunk: %w", err)
+			if err := sess.send(streamCtx, line, false); err != nil {
+				return TransferResult{}, fmt.Errorf("send chunk: %w", earlyExit(err))
 			}
 			totalSent += int64(n)
 			if progress != nil {
@@ -167,8 +196,8 @@ func upload(ctx context.Context, req TransferRequest, progress func(int64), p po
 		}
 	}
 
-	if err := sess.send(ctx, nil, true); err != nil {
-		return TransferResult{}, fmt.Errorf("send eof: %w", err)
+	if err := sess.send(streamCtx, nil, true); err != nil {
+		return TransferResult{}, fmt.Errorf("send eof: %w", earlyExit(err))
 	}
 
 	// Stage was written and the receiver is computing SHA-256. Drain

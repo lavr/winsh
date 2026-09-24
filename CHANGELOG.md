@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Stream upload and download data over two persistent NTLM connections, one
+  for input and one for output, instead of authenticating every chunk. A
+  100 MiB upload ran about twice as fast on the test route; download changed
+  little. Upload stops sending as soon as the remote receiver exits early.
 - Add streaming WinRM upload and download with SHA-256 verification, progress,
   staged commits and explicit handling of uncertain finalization.
 - Retry transient failures during the empty-body NTLM handshake before a SOAP
@@ -10,7 +14,7 @@
 - Domain credentials through environment/stdin, manual endpoint and SSH tunnels.
 - Separate output streams, remote exit status, timeout and cancellation cleanup.
 - UTF-8 PowerShell and optional CP866/CP1251 decoding for cmd output.
-- Tests, four-platform static builds and GitHub Actions release workflow.
+- Tests, Linux and macOS static builds and GitHub Actions release workflow.
 
 - Cancel a blocked password read on Ctrl-C, including real OS stdin pipes.
 - Handle HTTP.sys closing the anonymous authentication-discovery connection.

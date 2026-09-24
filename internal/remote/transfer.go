@@ -78,10 +78,36 @@ func IsTransferInputError(err error) bool {
 
 // Transfer sends a single regular file through the existing WinRM transport.
 func Transfer(ctx context.Context, req TransferRequest, progress func(int64)) (TransferResult, error) {
-	return transfer(ctx, req, progress, newTransport(req.Connection))
+	return transferLanes(ctx, req, progress, newTransport(req.Connection), persistentLanes(req.Connection))
+}
+
+// dataLanes authenticates the Send and Receive connections for one streaming
+// session. closeLanes runs after the session's workers have stopped.
+type dataLanes func(context.Context) (send, receive poster, closeLanes func(), err error)
+
+// sharedLanes sends data exchanges through p, as control exchanges do.
+func sharedLanes(p poster) dataLanes {
+	return func(context.Context) (poster, poster, func(), error) { return p, p, func() {}, nil }
+}
+
+// persistentLanes authenticates two pinned NTLM connections, so a transfer
+// pays one handshake per lane instead of one per data chunk. Control,
+// finalization and cleanup keep their own short-lived connections.
+func persistentLanes(r Request) dataLanes {
+	return func(ctx context.Context) (poster, poster, func(), error) {
+		send, receive, closeBoth, err := NewPersistentPosters(ctx, r)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return posterAdapter{send}, posterAdapter{receive}, closeBoth, nil
+	}
 }
 
 func transfer(ctx context.Context, req TransferRequest, progress func(int64), p poster) (TransferResult, error) {
+	return transferLanes(ctx, req, progress, p, sharedLanes(p))
+}
+
+func transferLanes(ctx context.Context, req TransferRequest, progress func(int64), p poster, lanes dataLanes) (TransferResult, error) {
 	if req.Direction != Upload && req.Direction != Download {
 		return TransferResult{}, &TransferInputError{Message: "transfer direction must be upload or download"}
 	}
@@ -95,7 +121,7 @@ func transfer(ctx context.Context, req TransferRequest, progress func(int64), p 
 		progress = func(int64) {}
 	}
 	if req.Direction == Upload {
-		return upload(ctx, req, progress, p)
+		return uploadLanes(ctx, req, progress, p, lanes)
 	}
-	return download(ctx, req, progress, p)
+	return downloadLanes(ctx, req, progress, p, lanes)
 }
