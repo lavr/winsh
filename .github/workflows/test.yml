@@ -32,7 +32,7 @@ jobs:
   platforms:
     strategy:
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5

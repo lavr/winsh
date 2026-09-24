@@ -27,10 +27,6 @@ jobs:
             cp LICENSE README.md "dist/$target/"
             tar -czf "archives/winsh-$VERSION-$target.tar.gz" -C "dist/$target" winsh LICENSE README.md
           done
-          mkdir -p dist/windows-amd64
-          cp dist/winsh-windows-amd64.exe dist/windows-amd64/winsh.exe
-          cp LICENSE README.md dist/windows-amd64/
-          (cd dist/windows-amd64 && zip "../../archives/winsh-$VERSION-windows-amd64.zip" winsh.exe LICENSE README.md)
           (cd archives && sha256sum winsh-* > SHA256SUMS)
       - uses: actions/upload-artifact@v6
         with:

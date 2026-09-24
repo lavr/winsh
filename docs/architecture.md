@@ -7,6 +7,10 @@ a password through `internal/secret`. `run` and `ps` call `remote.Run`;
 deadline. The transfer commands reuse connection and credential precedence,
 then require two literal paths after `--`.
 
+The client runs on Linux and macOS. Local upload source checks and download
+stage commits use Unix file operations; Windows path rules still apply to the
+remote endpoint.
+
 `internal/remote` uses the go-winrm fork's SOAP request builders and PowerShell
 encoding. The module is replaced using its declared historical name,
 `github.com/JohanVanosmaelAcerta/go-winrm`, pinned to commit

@@ -16,9 +16,8 @@ import (
 // symlinks and other non-regular sources because the upload flow reads
 // the bytes directly from the opened handle and then re-hashes the
 // staged copy; a symlink would let a concurrent rename or replace
-// change the source after the size check. On Unix the underlying syscall
-// uses O_NOFOLLOW with a nonblocking open; on Windows, commit_windows.go adds a
-// narrow reparse-point rejection layer.
+// change the source after the size check. The local syscall uses O_NOFOLLOW
+// with a nonblocking open.
 func openSource(path string) (*os.File, os.FileInfo, error) {
 	if path == "" {
 		return nil, nil, errors.New("source path must not be empty")
