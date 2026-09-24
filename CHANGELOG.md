@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add streaming WinRM upload and download with SHA-256 verification, progress,
+  staged commits and explicit handling of uncertain finalization.
+- Retry transient failures during the empty-body NTLM handshake before a SOAP
+  request is sent; never retry an uncertain remote command or transfer chunk.
 - Initial Go CLI with run and ps, NTLMv2, encrypted HTTP and verified HTTPS.
 - Domain credentials through environment/stdin, manual endpoint and SSH tunnels.
 - Separate output streams, remote exit status, timeout and cancellation cleanup.

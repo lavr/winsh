@@ -52,6 +52,42 @@ allows 8,000 UTF-16 code units for `run` and 8,000 characters for the **encoded*
 PowerShell invocation (roughly 2.7 KiB of script). Larger input fails locally;
 `-f` does not bypass this limit.
 
+## Transfer a file
+
+```sh
+winsh upload server.example.com --user 'EXAMPLE\alice' -- ./artifact.bin 'C:\Temp\artifact.bin'
+winsh download --context lab --force -- 'C:\Temp\artifact.bin' ./artifact.bin
+```
+
+`upload` and `download` take exactly two literal file paths after `--` in the
+order shown above. Quote Windows paths for your local shell. Paths cannot be
+`-`; stdin and stdout are reserved for credentials and status. `-f` and
+`--codepage` apply to command execution only. A connection can come from a
+positional host, an endpoint, or the selected configuration context.
+
+The destination parent directory must already exist. Remote paths must be
+absolute drive-rooted paths (for example, `C:\Temp\file.bin`); UNC and device
+paths, alternate data streams and wildcards are not supported. Files are streamed
+through WinRM, checked by byte count and SHA-256, and committed through a
+temporary file in the destination directory. The default refuses an existing
+destination; `--force` allows replacement. Retry without `--force` first when
+the final commit outcome is unknown. Inspect the destination and its checksum
+before deciding whether to overwrite. Transfer does not resume an interrupted
+stream, preserve timestamps or access control lists, or copy directories.
+Cleanup is bounded, so a lost connection can leave a temporary artifact; the
+error lists known artifact paths.
+
+Progress and errors go to stderr. A completed transfer prints one stdout line
+with direction, byte count and SHA-256. Upload and download use one overall
+30-minute timeout unless `--timeout` or YAML `defaults.timeout` sets another
+duration. A CLI timeout takes precedence over YAML. `run` and `ps` retain
+their 60-second default. Transfer has been tested from a macOS arm64 client to
+Windows Server 2016 over NTLM-encrypted HTTP, including 100 MiB and 200 MiB
+round-trips. An amd64 Linux client also completed small upload and download
+checks with independent destination SHA-256 verification. Linux arm64 and
+Windows clients, HTTPS, and Server 2019 remain unvalidated for file transfer;
+cross-builds alone do not establish compatibility.
+
 ## Configuration and contexts
 
 Copy [examples/config.yaml](examples/config.yaml) to your own configuration:
@@ -147,9 +183,17 @@ promise that all remote child processes have stopped.
 
 ```sh
 make check             # formatting, vet, unit tests, race detector
-make integration       # live Windows test skips unless explicitly configured
+make integration       # live Windows tests skip unless explicitly configured
+make integration-transfer # extended live transfer tests, including 100/200 MiB
 make cross-build
 ```
+
+Live tests require `WINSH_TEST_ENDPOINT`, `WINSH_TEST_USER`, and
+`WINSH_TEST_PASSWORD`. The transfer suite creates a unique directory below the
+remote account's temporary directory and removes only that directory. The
+extended target opts in to long measurements and fault injection; it is not
+part of the routine 120-second integration gate. Missing credentials produce
+skips, which do not establish compatibility.
 
 See [testing](docs/testing.md), [architecture](docs/architecture.md), and
 [roadmap](docs/roadmap.md). Releases use `./release.sh status` then

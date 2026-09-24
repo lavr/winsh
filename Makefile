@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 sq = $(subst ','\'',$(1))
 
-.PHONY: build test integration race vet fmt check cross-build clean
+.PHONY: build test integration integration-transfer race vet fmt check cross-build clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -X main.version=$(call sq,$(VERSION))' -o dist/winsh .
@@ -11,6 +11,9 @@ test:
 
 integration:
 	go test -tags=integration -timeout=120s ./...
+
+integration-transfer:
+	WINSH_TEST_TRANSFER_LARGE=1 go test -tags=integration -timeout=90m ./internal/remote -run '^TestLiveTransfer' -count=1 -v
 
 race:
 	go test -race -timeout=90s ./...

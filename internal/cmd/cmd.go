@@ -21,6 +21,7 @@ type Deps struct {
 	Getenv         func(string) string
 	LookupEnv      func(string) (string, bool)
 	Execute        func(context.Context, remote.Request, io.Writer, io.Writer) (int, error)
+	Transfer       func(context.Context, remote.TransferRequest, func(int64)) (remote.TransferResult, error)
 	Version        string
 }
 
@@ -32,6 +33,7 @@ type options struct {
 	verbose                                int
 	configPath, contextName, passwordValue string
 	configuredPassword                     bool
+	timeoutConfigured                      bool
 }
 
 func Run(ctx context.Context, args []string, d Deps) int {
@@ -54,9 +56,11 @@ func Run(ctx context.Context, args []string, d Deps) int {
 		return 0
 	case "config":
 		return runConfig(args[1:], d)
+	case "upload", "download":
+		return runTransfer(ctx, args, d)
 	case "run", "ps":
 	default:
-		fmt.Fprintln(d.Stderr, "winsh: expected run or ps; see --help")
+		fmt.Fprintln(d.Stderr, "winsh: expected run, ps, upload or download; see --help")
 		return 201
 	}
 	o, err := parse(args, d)
@@ -68,16 +72,7 @@ func Run(ctx context.Context, args []string, d Deps) int {
 		usage(d.Stdout)
 		return 0
 	}
-	lookup := d.Getenv
-	if lookup == nil {
-		lookup = os.Getenv
-	}
-	var password string
-	if o.configuredPassword {
-		password = o.passwordValue
-	} else {
-		password, err = secret.ReadContext(ctx, o.passwordEnv, o.passwordStdin, d.Stdin, lookup)
-	}
+	password, err := resolvePassword(ctx, o, d)
 	if ctx.Err() != nil {
 		fmt.Fprintln(d.Stderr, "winsh:", ctx.Err())
 		return 204
@@ -104,8 +99,26 @@ func Run(ctx context.Context, args []string, d Deps) int {
 		code = 204
 	}
 	// Errors may contain server-controlled text. Never print credentials from them.
-	fmt.Fprintln(d.Stderr, "winsh:", strings.ReplaceAll(err.Error(), password, "[REDACTED]"))
+	fmt.Fprintln(d.Stderr, "winsh:", redact(err.Error(), password))
 	return code
+}
+
+func resolvePassword(ctx context.Context, o options, d Deps) (string, error) {
+	if o.configuredPassword {
+		return o.passwordValue, nil
+	}
+	lookup := d.Getenv
+	if lookup == nil {
+		lookup = os.Getenv
+	}
+	return secret.ReadContext(ctx, o.passwordEnv, o.passwordStdin, d.Stdin, lookup)
+}
+
+func redact(message, password string) string {
+	if password == "" {
+		return message
+	}
+	return strings.ReplaceAll(message, password, "[REDACTED]")
 }
 
 func parse(args []string, d Deps) (options, error) {
@@ -185,6 +198,7 @@ func parse(args []string, d Deps) (options, error) {
 				return o, errors.New("timeout must be a positive duration")
 			}
 			o.timeout = duration
+			o.timeoutConfigured = true
 		case "--codepage":
 			o.request.Codepage = value
 		case "-f":
@@ -265,6 +279,8 @@ Usage:
   winsh run <host> [options] -- <cmd shell text ...>
   winsh ps  <host> [options] -- <PowerShell script ...>
   winsh ps  <host> [options] -f script.ps1
+  winsh upload [host] [options] [--force] -- LOCAL_FILE REMOTE_FILE
+  winsh download [host] [options] [--force] -- REMOTE_FILE LOCAL_FILE
   winsh [--config PATH] config get-contexts|current-context|view
   winsh [--config PATH] config use-context NAME
 
@@ -280,13 +296,16 @@ Options:
   --password-env NAME    Password variable name (default WINRM_PASSWORD)
   --password-stdin       Read password from first stdin line; no prompt
   --target-host NAME     TLS certificate name when using a tunnel
-  --timeout DURATION    Overall execution timeout (default 60s)
+  --timeout DURATION    Overall timeout (run/ps 60s; transfers 30m)
+  --force               Replace an existing transfer destination
   --codepage CODEPAGE    run encoding: raw/utf-8 (default WinRS UTF-8), 866 or 1251
   -v, -vv                Session diagnostics on stderr (no wire dump)
   --help, --version
 
 Quote complete remote commands to preserve Windows quoting. Everything after
 -- is command text, including --help and -v. Remote stdin is not forwarded.
+For upload/download, exactly two literal file paths follow --. The destination
+parent must already exist. A transfer completes only after SHA-256 verification.
 HTTP uses NTLM message encryption. HTTPS verifies the server certificate.
 `)
 }

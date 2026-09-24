@@ -5,6 +5,8 @@ Unit tests use synthetic credentials only. They cover command parsing, Unicode,
 password sources, codepages, SOAP shell lifecycle, exit codes, cleanup contexts,
 TLS verification, redirects, deadlines, NTLM challenge validation, and encrypted
 message framing. Fuzz targets cover untrusted Type2 and multipart data.
+Transfer unit tests also cover staging and commits, byte framing, SHA-256
+records, path validation, cancellation, uncertain finalization and cleanup.
 
 ```sh
 go test ./internal/remote -run='^$' -fuzz=FuzzChallenge -fuzztime=10s
@@ -33,11 +35,19 @@ Configure these environment variables using your usual credential mechanism:
 | `WINSH_TEST_PASSWORD` | Password value, supplied through the environment |
 | `WINSH_TEST_TARGET_HOST` | Optional TLS certificate name for a tunnel |
 
-Run `make integration`. Without the endpoint, the Windows test explicitly skips.
-With an endpoint, missing credentials fail the test. It executes only echo/
-Write-Output, stderr output, and explicit exit codes. It does not change WinRM
-configuration, services or files. Test both HTTP with AllowUnencrypted disabled
-and HTTPS before declaring a stable release. Unit tests alone do not establish
+Run `make integration`. Without the endpoint, live tests skip. With an endpoint,
+missing credentials fail the command smoke test. That smoke test executes
+echo/Write-Output, stderr output, and explicit exit codes. The opt-in transfer
+round-trip and probe tests also run under this target: they create a unique
+directory under the remote account's temporary directory, transfer synthetic
+files, and remove that directory. They do not change WinRM configuration or
+services. A skipped test does not establish compatibility.
+
+`make integration-transfer` opts into the transfer fault suite and 100/200 MiB
+round-trips; it can take longer than the routine integration target. Configure
+the same explicit credentials and review the independent source/destination
+SHA-256 checks. Test both HTTP with AllowUnencrypted disabled and HTTPS before
+declaring a stable transfer release. Unit tests alone do not establish
 compatibility with a real Windows installation.
 
 Release automation deliberately requires these variables, preventing a skipped
@@ -49,4 +59,9 @@ On 2026-09-08, Windows Server 2016 and 2019 passed HTTP NTLM tests with
 AllowUnencrypted disabled: cmd/PowerShell, Unicode including supplementary
 characters, separate stderr, nonzero exit statuses, script files, explicit
 CP866 and execution timeout. The opt-in Go live suite passed on both versions.
-HTTPS remains covered by local TLS tests; no live HTTPS listener was tested.
+For file transfer, a Windows Server 2016 endpoint passed the small, fault and
+100/200 MiB live suites over encrypted HTTP. A Linux amd64 client also passed
+small upload and download checks with independent destination hashes. Native
+Windows and Linux arm64 clients, HTTPS transfer and Server 2019 transfer remain
+unvalidated. HTTPS remains covered by local TLS tests; no live HTTPS listener
+was tested.

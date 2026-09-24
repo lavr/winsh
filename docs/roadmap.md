@@ -1,11 +1,15 @@
 # Roadmap
 
-- **v0.1:** run, ps, NTLM, password env/stdin, endpoint/tunnel support, static
-  binaries, explicit codepage decoding, bounded execution and cleanup.
-- **v0.2:** optional host inventory, probe, JSON output, service operations.
-- **v0.3:** chunked file transfer with SHA-256 verification and progress.
-- **v0.4:** Kerberos, TLS channel binding and broader domain compatibility.
-- **v0.5:** optional SMB file transport.
+- **Current development:** run, ps, upload, download, NTLM, password env/stdin,
+  endpoint/tunnel support, static binaries, explicit codepage decoding,
+  bounded execution and cleanup. File transfer was implemented ahead of its
+  original v0.3 target; its release version is not assigned yet.
 
-No built-in SSH orchestration, pass-the-hash, interactive shell or multi-host
-execution is part of v0.1. Unsupported options fail explicitly.
+Future ideas, without assigned release versions:
+
+- Optional host inventory, probe, JSON output and service operations.
+- Kerberos, TLS channel binding and broader domain compatibility.
+- Optional SMB file transport.
+
+Built-in SSH orchestration, pass-the-hash, interactive shells and multi-host
+execution are outside the current scope. Unsupported options fail explicitly.
