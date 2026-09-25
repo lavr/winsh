@@ -81,25 +81,48 @@ func Transfer(ctx context.Context, req TransferRequest, progress func(int64)) (T
 	return transferLanes(ctx, req, progress, newTransport(req.Connection), persistentLanes(req.Connection))
 }
 
-// dataLanes authenticates the Send and Receive connections for one streaming
-// session. closeLanes runs after the session's workers have stopped.
-type dataLanes func(context.Context) (send, receive poster, closeLanes func(), err error)
-
-// sharedLanes sends data exchanges through p, as control exchanges do.
-func sharedLanes(p poster) dataLanes {
-	return func(context.Context) (poster, poster, func(), error) { return p, p, func() {}, nil }
+// transferConns carries one transfer's persistent connections: SendInput and
+// Receive for the streaming session, and cleanup for Signal, Delete and
+// remote stage removal of every session in the transfer.
+type transferConns struct {
+	send, receive, cleanup poster
 }
 
-// persistentLanes authenticates two pinned NTLM connections, so a transfer
-// pays one handshake per lane instead of one per data chunk. Control,
-// finalization and cleanup keep their own short-lived connections.
+// dataLanes authenticates a transfer's lanes before its first remote session.
+// closeLanes runs after every session and cleanup has finished.
+type dataLanes func(context.Context) (lanes transferConns, closeLanes func(), err error)
+
+// sharedLanes sends every exchange through p.
+func sharedLanes(p poster) dataLanes {
+	return func(context.Context) (transferConns, func(), error) {
+		return transferConns{send: p, receive: p, cleanup: p}, func() {}, nil
+	}
+}
+
+// persistentLanes authenticates three pinned NTLM connections, so a transfer
+// pays one handshake per lane instead of one per data chunk, and cleanup costs
+// a few SOAP exchanges rather than a handshake per request. Heartbeats keep
+// the cleanup lane, idle for most of the transfer, from being closed by the
+// server. Control and finalization keep their own short-lived connections.
 func persistentLanes(r Request) dataLanes {
-	return func(ctx context.Context) (poster, poster, func(), error) {
-		send, receive, closeBoth, err := NewPersistentPosters(ctx, r)
-		if err != nil {
-			return nil, nil, nil, err
+	return func(ctx context.Context) (transferConns, func(), error) {
+		var opened []*persistentPoster
+		closeAll := func() {
+			for _, p := range opened {
+				p.Close()
+			}
 		}
-		return posterAdapter{send}, posterAdapter{receive}, closeBoth, nil
+		for range 3 {
+			p, err := openPersistentWithRetries(ctx, r)
+			if err != nil {
+				closeAll()
+				return transferConns{}, nil, err
+			}
+			opened = append(opened, p)
+		}
+		stop := keepLanesAlive(context.WithoutCancel(ctx), HeartbeatInterval, opened[0], opened[1], opened[2])
+		lanes := transferConns{send: posterAdapter{opened[0]}, receive: posterAdapter{opened[1]}, cleanup: posterAdapter{opened[2]}}
+		return lanes, func() { stop(); closeAll() }, nil
 	}
 }
 

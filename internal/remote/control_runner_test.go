@@ -38,8 +38,8 @@ func TestRunWithPostersPyspnegoInterop(t *testing.T) {
 			t.Fatalf("command %d: rc=%d err=%v out=%q errout=%q", i, rc, err, stdout.String(), stderr.String())
 		}
 	}
-	if calls := pyspnegoStats(t, ctx, endpoint); !reflect.DeepEqual(calls, []int{0, 12}) {
-		t.Fatalf("expected one command connection with 12 SOAP calls and untouched cleanup connection; got %v", calls)
+	if calls := pyspnegoStats(t, ctx, endpoint); !reflect.DeepEqual(calls, []int{0, 10}) {
+		t.Fatalf("expected one command connection with 10 SOAP calls and untouched cleanup connection; got %v", calls)
 	}
 }
 
@@ -101,7 +101,8 @@ func TestRunWithPostersDistinctShellPerCommand(t *testing.T) {
 			t.Fatalf("command %d: rc=%d err=%v out=%q errout=%q", i, rc, err, stdout.String(), stderr.String())
 		}
 	}
-	want := []string{"create", "command", "send", "receive", "signal", "delete", "create", "command", "send", "receive", "signal", "delete"}
+	// A completed command needs no Signal before Delete.
+	want := []string{"create", "command", "send", "receive", "delete", "create", "command", "send", "receive", "delete"}
 	if !reflect.DeepEqual(actions, want) {
 		t.Fatalf("SOAP actions = %v, want %v", actions, want)
 	}

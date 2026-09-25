@@ -81,11 +81,11 @@ func uploadLanes(ctx context.Context, req TransferRequest, progress func(int64),
 		return TransferResult{}, fmt.Errorf("build receiver script: %w", err)
 	}
 
-	sendLane, recvLane, closeLanes, err := lanes(ctx)
+	lane, closeLanes, err := lanes(ctx)
 	if err != nil {
 		return TransferResult{}, fmt.Errorf("authenticate data connections: %w", err)
 	}
-	// Deferred first, so it runs after the receiver session is closed.
+	// Deferred first, so it runs after every session and cleanup.
 	defer closeLanes()
 	sess, err := startSessionLanes(ctx, Request{
 		Endpoint:   req.Connection.Endpoint,
@@ -94,7 +94,7 @@ func uploadLanes(ctx context.Context, req TransferRequest, progress func(int64),
 		Password:   req.Connection.Password,
 		Command:    receiverCmd,
 		PowerShell: true,
-	}, p, p, sendLane, recvLane)
+	}, p, lane.cleanup, lane.send, lane.receive, p)
 	if err != nil {
 		return TransferResult{}, fmt.Errorf("start receiver: %w", err)
 	}
@@ -130,7 +130,10 @@ func uploadLanes(ctx context.Context, req TransferRequest, progress func(int64),
 		if runErr != nil && !result.Committed {
 			result.Artifacts = append(result.Artifacts, stagePath)
 			if !errors.As(runErr, &unknown) {
-				if err := cleanupRemoteStage(cleanupCtx, req, stagePath, p); err == nil {
+				// The stage gets its own budget after the receiver's Delete.
+				stageCtx, cancelStage := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancelStage()
+				if err := cleanupRemoteStage(stageCtx, req, stagePath, lane.cleanup, p); err == nil {
 					result.Artifacts = nil
 				} else {
 					runErr = errors.Join(runErr, fmt.Errorf("remove remote stage: %w", err))
@@ -246,7 +249,7 @@ func uploadLanes(ctx context.Context, req TransferRequest, progress func(int64),
 	}
 	commitCancel()
 
-	return dispatchFinalizer(ctx, req, transferID, stagePath, localSHA, totalSent, p)
+	return dispatchFinalizer(ctx, req, transferID, stagePath, localSHA, totalSent, p, lane.cleanup)
 }
 
 // dispatchFinalizer runs the control.ps1 command that re-verifies the
@@ -260,7 +263,7 @@ func uploadLanes(ctx context.Context, req TransferRequest, progress func(int64),
 // from the receiver session's budget. A new five-second slice is used
 // here so the finalizer cannot eat into the cleanup that the caller
 // allocated for the receiver.
-func dispatchFinalizer(ctx context.Context, req TransferRequest, transferID, stagePath, sha256Hex string, byteCount int64, p poster) (result TransferResult, runErr error) {
+func dispatchFinalizer(ctx context.Context, req TransferRequest, transferID, stagePath, sha256Hex string, byteCount int64, p, cleanup poster) (result TransferResult, runErr error) {
 	force := "false"
 	if req.Force {
 		force = "true"
@@ -277,14 +280,14 @@ func dispatchFinalizer(ctx context.Context, req TransferRequest, transferID, sta
 		return TransferResult{Bytes: byteCount, SHA256: sha256Hex}, fmt.Errorf("build finalizer: %w", err)
 	}
 
-	sess, err := startSession(ctx, Request{
+	sess, err := startSessionLanes(ctx, Request{
 		Endpoint:   req.Connection.Endpoint,
 		TargetHost: req.Connection.TargetHost,
 		User:       req.Connection.User,
 		Password:   req.Connection.Password,
 		Command:    finalizerCmd,
 		PowerShell: true,
-	}, p)
+	}, p, cleanup, p, p, p)
 	if err != nil {
 		return TransferResult{Bytes: byteCount, SHA256: sha256Hex},
 			&FinalizationUnknownError{Cause: fmt.Errorf("start finalizer: %w", err)}
@@ -324,17 +327,26 @@ func dispatchFinalizer(ctx context.Context, req TransferRequest, transferID, sta
 	return TransferResult{Bytes: byteCount, SHA256: sha256Hex, Committed: true}, nil
 }
 
-func cleanupRemoteStage(ctx context.Context, req TransferRequest, stagePath string, p poster) error {
+// cleanupRemoteStage removes a remote stage or control record through its own
+// short session on p. Its Delete gets a separate budget, falls back to
+// fallback when p cannot send it, and a failure is reported, not dropped.
+func cleanupRemoteStage(ctx context.Context, req TransferRequest, stagePath string, p, fallback poster) (runErr error) {
 	script, err := transferScript("cleanup.ps1", map[string]string{"stage": stagePath})
 	if err != nil {
 		return err
 	}
-	s, err := startSession(ctx, Request{Endpoint: req.Connection.Endpoint, TargetHost: req.Connection.TargetHost,
-		User: req.Connection.User, Password: req.Connection.Password, Command: script, PowerShell: true}, p)
+	s, err := startSessionLanes(ctx, Request{Endpoint: req.Connection.Endpoint, TargetHost: req.Connection.TargetHost,
+		User: req.Connection.User, Password: req.Connection.Password, Command: script, PowerShell: true}, p, p, p, p, fallback)
 	if err != nil {
 		return err
 	}
-	defer s.close(ctx)
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := s.close(closeCtx); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("close cleanup shell: %w", err))
+		}
+	}()
 	if err := s.send(ctx, nil, true); err != nil {
 		return err
 	}

@@ -69,7 +69,13 @@ func downloadLanes(ctx context.Context, req TransferRequest, progress func(int64
 	if err != nil {
 		return result, err
 	}
-	tempOut, rc, err := transferControl(ctx, req.Connection, tempScript, p)
+	lane, closeLanes, err := lanes(ctx)
+	if err != nil {
+		return result, fmt.Errorf("authenticate data connections: %w", err)
+	}
+	// Deferred first, so it runs after every session and cleanup.
+	defer closeLanes()
+	tempOut, rc, err := transferControl(ctx, req.Connection, tempScript, p, lane.cleanup)
 	if err != nil {
 		return result, fmt.Errorf("remote temp: %w", err)
 	}
@@ -93,13 +99,7 @@ func downloadLanes(ctx context.Context, req TransferRequest, progress func(int64
 	if err != nil {
 		return result, err
 	}
-	sendLane, recvLane, closeLanes, err := lanes(ctx)
-	if err != nil {
-		return result, fmt.Errorf("authenticate data connections: %w", err)
-	}
-	// Deferred first, so it runs after the sender session is closed.
-	defer closeLanes()
-	s, err := startSessionLanes(ctx, Request{Endpoint: req.Connection.Endpoint, TargetHost: req.Connection.TargetHost, User: req.Connection.User, Password: req.Connection.Password, Command: script, PowerShell: true}, p, p, sendLane, recvLane)
+	s, err := startSessionLanes(ctx, Request{Endpoint: req.Connection.Endpoint, TargetHost: req.Connection.TargetHost, User: req.Connection.User, Password: req.Connection.Password, Command: script, PowerShell: true}, p, lane.cleanup, lane.send, lane.receive, p)
 	if err != nil {
 		return result, fmt.Errorf("start sender: %w", err)
 	}
@@ -116,7 +116,10 @@ func downloadLanes(ctx context.Context, req TransferRequest, progress func(int64
 			result.Artifacts = append(result.Artifacts, metadata)
 			return
 		}
-		if err := cleanupRemoteStage(cleanup, req, metadata, p); err != nil {
+		// The control record gets its own budget after the sender's Delete.
+		recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancelRecord()
+		if err := cleanupRemoteStage(recordCtx, req, metadata, lane.cleanup, p); err != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("remove control record: %w", err))
 			result.Artifacts = append(result.Artifacts, metadata)
 		}
@@ -165,7 +168,7 @@ func downloadLanes(ctx context.Context, req TransferRequest, progress func(int64
 	if err != nil {
 		return result, err
 	}
-	control, rc, err := transferControl(ctx, req.Connection, fetchScript, p)
+	control, rc, err := transferControl(ctx, req.Connection, fetchScript, p, lane.cleanup)
 	if err != nil {
 		return result, fmt.Errorf("fetch control record: %w", err)
 	}
@@ -206,12 +209,12 @@ func rejectLocalLink(path string) error {
 	return nil
 }
 
-func transferControl(ctx context.Context, connection Request, script string, p poster) (string, int, error) {
+func transferControl(ctx context.Context, connection Request, script string, p, cleanup poster) (string, int, error) {
 	request := connection
 	request.Command = script
 	request.PowerShell = true
 	stdout, stderr := boundedOutput{limit: transferRecordMaxSize}, boundedOutput{limit: 1024}
-	rc, err := run(ctx, request, &stdout, &stderr, p)
+	rc, err := runWithCleanup(ctx, request, &stdout, &stderr, p, cleanup, p)
 	if err != nil {
 		return "", 0, err
 	}
