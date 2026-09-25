@@ -54,7 +54,9 @@ with tempfile.TemporaryDirectory(prefix="winsh-control-smoke-") as workdir:
         assert check.returncode == 0, (check.returncode, check.stderr)
         with urllib.request.urlopen(endpoint.removesuffix("/wsman") + "/stats", timeout=3) as response:
             counts = json.load(response)
-        assert counts == [0, 12], counts
+        # Two commands, each Create, Command, Send, Receive and Delete on the
+        # command connection; the cleanup connection stays unused.
+        assert counts == [0, 10], counts
 
         shutdown = call("control", "exit", *base)
         assert shutdown.returncode == 0, (shutdown.returncode, shutdown.stderr)
