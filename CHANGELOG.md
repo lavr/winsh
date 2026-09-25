@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.1 — 2026-09-25
 
 - Clean up over a pre-authenticated connection kept alive by heartbeats, so
   Signal and Delete fit their five-second budget on slow links instead of
