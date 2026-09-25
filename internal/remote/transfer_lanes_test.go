@@ -51,8 +51,8 @@ func (r *laneRecorder) lane(name string, post func(context.Context, string) (str
 }
 
 func (r *laneRecorder) lanes(post func(context.Context, string) (string, error)) dataLanes {
-	return func(context.Context) (poster, poster, func(), error) {
-		return r.lane("send", post), r.lane("receive", post), func() { r.closed.Add(1) }, nil
+	return func(context.Context) (transferConns, func(), error) {
+		return transferConns{send: r.lane("send", post), receive: r.lane("receive", post), cleanup: r.lane("cleanup", post)}, func() { r.closed.Add(1) }, nil
 	}
 }
 
@@ -84,7 +84,10 @@ func TestUploadUsesSeparateDataLanes(t *testing.T) {
 	}
 	r.only(t, "send", "Send")
 	r.only(t, "receive", "Receive")
-	r.only(t, "control", "Create", "Command", "Send", "Receive", "Delete")
+	// Control opens the receiver and runs the finalizer; every Delete
+	// goes through the pre-authenticated cleanup lane.
+	r.only(t, "control", "Create", "Command", "Send", "Receive")
+	r.only(t, "cleanup", "Delete")
 	if r.closed.Load() != 1 {
 		t.Fatalf("data lanes closed %d times", r.closed.Load())
 	}
@@ -100,8 +103,8 @@ func TestUploadStopsSendingWhenReceiverExitsEarly(t *testing.T) {
 		<-ctx.Done()
 		return "", ctx.Err()
 	}
-	lanes := func(context.Context) (poster, poster, func(), error) {
-		return postFunc(send), postFunc(f.post), func() {}, nil
+	lanes := func(context.Context) (transferConns, func(), error) {
+		return transferConns{send: postFunc(send), receive: postFunc(f.post), cleanup: postFunc(f.post)}, func() {}, nil
 	}
 	result, err := uploadLanes(t.Context(), req, nil, postFunc(f.post), lanes)
 	if err == nil || !strings.Contains(err.Error(), "receiver exited before end of input") || result.Committed {
@@ -121,15 +124,14 @@ func TestTransferLaneAuthenticationFailureStartsNoShell(t *testing.T) {
 		}
 		return "", errors.New("unexpected exchange")
 	})
-	lanes := func(context.Context) (poster, poster, func(), error) {
-		return nil, nil, nil, errors.New("NTLM authentication failed: HTTP 401")
+	lanes := func(context.Context) (transferConns, func(), error) {
+		return transferConns{}, nil, errors.New("NTLM authentication failed: HTTP 401")
 	}
 	_, err := uploadLanes(t.Context(), req, nil, p, lanes)
 	if err == nil || !strings.Contains(err.Error(), "authenticate data connections") || creates.Load() != 0 {
 		t.Fatalf("upload err=%v creates=%d", err, creates.Load())
 	}
-	// Download resolves its remote temp directory through the control
-	// connection first; no sender shell may follow the lane failure.
+	// Download authenticates its lanes before any remote session.
 	f := &downloadFake{}
 	control := postFunc(func(ctx context.Context, body string) (string, error) {
 		if soapAction(body) == "Create" {
@@ -139,7 +141,7 @@ func TestTransferLaneAuthenticationFailureStartsNoShell(t *testing.T) {
 	})
 	dest := filepath.Join(t.TempDir(), "download.bin")
 	_, err = downloadLanes(t.Context(), TransferRequest{Direction: Download, LocalPath: dest, RemotePath: `C:\Temp\source.bin`, Connection: Request{Endpoint: "http://example.com:5985/wsman"}}, nil, control, lanes)
-	if err == nil || !strings.Contains(err.Error(), "authenticate data connections") || creates.Load() != 1 {
+	if err == nil || !strings.Contains(err.Error(), "authenticate data connections") || creates.Load() != 0 {
 		t.Fatalf("download err=%v creates=%d", err, creates.Load())
 	}
 }
@@ -174,13 +176,13 @@ func TestTransferLanesPyspnegoInterop(t *testing.T) {
 	defer cancel()
 	endpoint := startPyspnegoFixture(t, ctx)
 	r := Request{Endpoint: endpoint, User: `EXAMPLE\alice`, Password: "test-secret"}
-	send, receive, closeLanes, err := persistentLanes(r)(ctx)
+	lanes, closeLanes, err := persistentLanes(r)(ctx)
 	if err != nil {
 		t.Fatalf("authenticate lanes: %v", err)
 	}
 	defer closeLanes()
 	control := newTransport(r)
-	s, err := startSessionLanes(ctx, Request{Endpoint: endpoint, Command: "receiver", PowerShell: true}, control, control, send, receive)
+	s, err := startSessionLanes(ctx, Request{Endpoint: endpoint, Command: "receiver", PowerShell: true}, control, lanes.cleanup, lanes.send, lanes.receive, control)
 	if err != nil {
 		t.Fatalf("start session: %v", err)
 	}
@@ -219,9 +221,9 @@ func TestTransferLanesPyspnegoInterop(t *testing.T) {
 	if err := s.close(ctx); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	// One entry per authenticated connection: Create, Command and Delete
-	// on three short-lived ones, six Sends on one lane and at least one
-	// timed-out Receive plus the final one on the other.
+	// One entry per authenticated connection: Create and Command on two
+	// short-lived ones, Delete on the cleanup lane, six Sends on one lane
+	// and at least one timed-out Receive plus the final one on the other.
 	calls := pyspnegoStats(t, ctx, endpoint)
 	sort.Ints(calls)
 	if len(calls) != 5 || calls[0] != 1 || calls[1] != 1 || calls[2] != 1 || calls[3] != 6 && calls[4] != 6 || calls[3]+calls[4] < 6+2 {

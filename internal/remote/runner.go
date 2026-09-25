@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -14,8 +15,38 @@ type poster interface {
 	post(context.Context, string) (string, error)
 }
 
+// Run executes one command over two persistent NTLM connections: the command
+// connection carries Create, Command, Send and Receive, and a pre-authenticated
+// cleanup connection, kept open by heartbeats, carries Signal and Delete when
+// the command connection is interrupted. Cleanup then costs two SOAP exchanges
+// instead of a new NTLM handshake per request, so it fits its five-second
+// budget on slow links.
 func Run(ctx context.Context, r Request, stdout, stderr io.Writer) (int, error) {
-	return run(ctx, r, stdout, stderr, newTransport(r))
+	command, cleanup, closeBoth, err := NewPersistentPosters(ctx, r)
+	if err != nil {
+		return 0, err
+	}
+	defer closeBoth()
+	stop := keepLanesAlive(ctx, HeartbeatInterval, command, cleanup)
+	defer stop()
+	// A Delete the lanes could not send, for example after a failed
+	// heartbeat, falls back to a freshly authenticated connection.
+	rc, runErr, cleanupErr := runWithPosters(ctx, r, stdout, stderr, command, cleanup, newTransport(r))
+	if runErr == nil && cleanupErr != nil {
+		return rc, completedCleanupError(cleanupErr)
+	}
+	return rc, errors.Join(runErr, cleanupErr)
+}
+
+// completedCleanupError reports a cleanup failure after the command finished.
+// It keeps whether Shell deletion is uncertain but drops the cleanup budget's
+// own deadline, which is not the command's timeout.
+func completedCleanupError(err error) error {
+	outcome := ErrCleanupFailed
+	if errors.Is(err, ErrRemoteStateUnknown) {
+		outcome = ErrRemoteStateUnknown
+	}
+	return fmt.Errorf("remote command completed but shell cleanup failed: %w", outcome)
 }
 
 // run executes r.Command against a WinRM endpoint and drains the command's
@@ -26,8 +57,14 @@ func Run(ctx context.Context, r Request, stdout, stderr io.Writer) (int, error) 
 // non-UTF8 cmd output and the fixed five-second cleanup budget. The
 // cleanup budget starts only when we are about to close the shell; a
 // long-running command must not eat into the cleanup window.
-func run(ctx context.Context, r Request, stdout, stderr io.Writer, p poster) (code int, runErr error) {
-	s, err := startSession(ctx, r, p)
+func run(ctx context.Context, r Request, stdout, stderr io.Writer, p poster) (int, error) {
+	return runWithCleanup(ctx, r, stdout, stderr, p, p, nil)
+}
+
+// runWithCleanup is run with Delete sent through cleanup, or through
+// fallback when cleanup could not send it.
+func runWithCleanup(ctx context.Context, r Request, stdout, stderr io.Writer, p, cleanup, fallback poster) (code int, runErr error) {
+	s, err := startSessionLanes(ctx, r, p, cleanup, p, p, fallback)
 	if err != nil {
 		return 0, err
 	}

@@ -40,6 +40,9 @@ type session struct {
 	// never holds up a Send on the same HTTP/1.1 connection.
 	sendLane poster
 	recvLane poster
+	// fallback, when set, sends a Delete that neither close lane could
+	// send, typically over a freshly authenticated connection.
+	fallback poster
 
 	// Output destinations are set once by receive(); the receive loop
 	// blocks on outReady until they are populated.
@@ -73,13 +76,16 @@ func startSession(ctx context.Context, r Request, p poster) (*session, error) {
 }
 
 func startSessionWithCleanup(ctx context.Context, r Request, p, cleanup poster) (*session, error) {
-	return startSessionLanes(ctx, r, p, cleanup, p, p)
+	return startSessionLanes(ctx, r, p, cleanup, p, p, nil)
 }
 
 // startSessionLanes opens the shell and command through p, then uses send
 // and receive for the data exchanges. Signal and Delete stay on p and
 // cleanup, independent of the data lanes.
-func startSessionLanes(ctx context.Context, r Request, p, cleanup, send, receive poster) (*session, error) {
+//
+// fallback, when set, sends a Delete that cleanup could not send, including
+// the Delete that follows a failed Command.
+func startSessionLanes(ctx context.Context, r Request, p, cleanup, send, receive, fallback poster) (*session, error) {
 	command, err := Command(r.Command, r.PowerShell)
 	if err != nil {
 		return nil, err
@@ -94,6 +100,7 @@ func startSessionLanes(ctx context.Context, r Request, p, cleanup, send, receive
 		cleanup:       cleanup,
 		sendLane:      send,
 		recvLane:      receive,
+		fallback:      fallback,
 		outReady:      make(chan struct{}),
 		recvDone:      make(chan struct{}),
 		lifecycleDone: make(chan struct{}),
@@ -278,7 +285,7 @@ func (s *session) sendMessage(body []byte) (string, error) {
 // must be unblocked by their owner; failure to join is reported within ctx's
 // budget, never hidden behind a successful shell deletion.
 func (s *session) close(ctx context.Context) error {
-	return s.closeWith(ctx, s.p, s.p, false)
+	return s.closeWith(ctx, s.cleanup, s.cleanup, false)
 }
 
 func (s *session) closeWith(ctx context.Context, primary, fallback poster, signal bool) error {
@@ -327,6 +334,16 @@ func (s *session) closeWith(ctx context.Context, primary, fallback poster, signa
 	msg := winrm.NewDeleteShellRequest(s.endpoint, s.shellID, s.params)
 	defer msg.Free()
 	reply, err := deletePoster.post(ctx, msg.String())
+	// A Delete proven unsent, for example on a lane closed by a failed
+	// heartbeat, is safe to send once through another connection.
+	for _, alternative := range []poster{fallback, s.fallback} {
+		if !errors.Is(err, errUnsent) {
+			break
+		}
+		if alternative != nil {
+			reply, err = alternative.post(ctx, msg.String())
+		}
+	}
 	if err == nil {
 		var resp response
 		resp, err = parseResponse(reply)
@@ -419,6 +436,9 @@ func (s *session) deleteShellBestEffort() error {
 	msg := winrm.NewDeleteShellRequest(s.endpoint, s.shellID, s.params)
 	defer msg.Free()
 	reply, err := s.cleanup.post(cleanup, msg.String())
+	if errors.Is(err, errUnsent) && s.fallback != nil {
+		reply, err = s.fallback.post(cleanup, msg.String())
+	}
 	if err != nil {
 		return err
 	}

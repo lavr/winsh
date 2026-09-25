@@ -230,8 +230,12 @@ stderr and use 201 (input), 202 (transport/protocol/output/cleanup), 203 (timeou
 or 204 (cancellation). These codes can overlap with Windows application codes.
 On Unix, only the low eight bits of a Windows exit status are representable.
 `--timeout 60s` bounds execution; shell cleanup has a separate five-second
-budget. A broken connection can prevent cleanup, so cancellation cannot
-promise that all remote child processes have stopped.
+budget. Each command and transfer keeps a second NTLM connection authenticated
+and alive for cleanup, so Signal and Delete need no new handshake even on a
+slow link. If that connection is lost, cleanup falls back to a fresh
+connection, which a slow link may not finish in time. A broken connection can
+prevent cleanup, so cancellation cannot promise that all remote child
+processes have stopped.
 
 ## Development
 

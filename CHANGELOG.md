@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Clean up over a pre-authenticated connection kept alive by heartbeats, so
+  Signal and Delete fit their five-second budget on slow links instead of
+  leaving remote shells behind. `run` and `ps` without `--control` now use
+  two persistent NTLM connections per command. A Delete that could not be sent
+  falls back to a fresh connection; an uncertain one is never repeated.
+- A cleanup failure after a finished command exits with 202, not 203.
+- A finished command's Shell is deleted without a preceding Signal.
+
 ## v0.2.0 — 2026-09-25
 
 - Add `upload` and `download`: streaming WinRM file transfer with SHA-256
